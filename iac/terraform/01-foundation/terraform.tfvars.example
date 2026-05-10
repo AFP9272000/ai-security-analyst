@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars (gitignored) for local plan.
+# In CI/CD, root_email is passed as TF_VAR_root_email from a GitHub secret.
+
+region          = "us-east-1"
+project         = "ai-sec-analyst"
+root_email      = "your-gmail-address@gmail.com"
+allowed_regions = ["us-east-1", "us-east-2"]

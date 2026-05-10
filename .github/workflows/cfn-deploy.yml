@@ -32,6 +32,7 @@ permissions:
 env:
   AWS_REGION: us-east-1
   PROJECT: ai-sec-analyst
+  ROOT_EMAIL: ${{ secrets.ROOT_EMAIL }}
 
 jobs:
   changeset:
@@ -51,7 +52,9 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          templates=( *.yaml *.yml )
+          # Alphabetical order matches dependency order for foundation:
+          # org.yaml -> accounts.yaml -> scps.yaml
+          mapfile -t templates < <(ls *.yaml *.yml 2>/dev/null | sort)
           if [[ ${#templates[@]} -eq 0 ]]; then
             echo "::error::No templates found in this layer."
             exit 1
@@ -59,13 +62,18 @@ jobs:
           for t in "${templates[@]}"; do
             base="${t%.*}"
             stack="${PROJECT}-${{ inputs.layer }}-${base}"
-            changeset="cs-$(date +%s)"
+            # Per-template parameter injection.
+            params=""
+            if [[ "$base" == "accounts" ]]; then
+              params="--parameter-overrides RootEmail=${ROOT_EMAIL}"
+            fi
             echo "::group::Changeset for $stack"
             aws cloudformation deploy \
               --stack-name "$stack" \
               --template-file "$t" \
               --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
               --no-execute-changeset \
+              $params \
               --tags Project=$PROJECT Layer=${{ inputs.layer }} ManagedBy=cloudformation Environment=prod CostCenter=portfolio || true
             echo "::endgroup::"
           done
@@ -89,15 +97,21 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          for t in *.yaml *.yml; do
+          mapfile -t templates < <(ls *.yaml *.yml 2>/dev/null | sort)
+          for t in "${templates[@]}"; do
             base="${t%.*}"
             stack="${PROJECT}-${{ inputs.layer }}-${base}"
+            params=""
+            if [[ "$base" == "accounts" ]]; then
+              params="--parameter-overrides RootEmail=${ROOT_EMAIL}"
+            fi
             echo "::group::Deploying $stack"
             aws cloudformation deploy \
               --stack-name "$stack" \
               --template-file "$t" \
               --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
               --no-fail-on-empty-changeset \
+              $params \
               --tags Project=$PROJECT Layer=${{ inputs.layer }} ManagedBy=cloudformation Environment=prod CostCenter=portfolio
             echo "::endgroup::"
           done
@@ -120,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          # Delete in reverse alphabetical order (rough dependency reversal)
+          # Reverse alphabetical for dependency teardown order.
           mapfile -t templates < <(ls *.yaml *.yml 2>/dev/null | sort -r)
           for t in "${templates[@]}"; do
             base="${t%.*}"

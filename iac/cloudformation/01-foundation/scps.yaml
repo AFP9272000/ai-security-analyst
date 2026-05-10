@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Phase 1.2 - Service Control Policies for ai-security-analyst.
+  Parity equivalent of iac/terraform/01-foundation/scps.tf.
+
+Parameters:
+  AccountsStackName:
+    Type: String
+    Default: ai-sec-analyst-01-foundation-accounts
+    Description: Name of the accounts stack to import OU IDs from
+
+  AllowedRegions:
+    Type: CommaDelimitedList
+    Default: 'us-east-1,us-east-2'
+
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+Resources:
+  DenyRootPolicy:
+    Type: AWS::Organizations::Policy
+    Properties:
+      Name: !Sub '${ProjectName}-deny-root'
+      Description: Deny root user API calls
+      Type: SERVICE_CONTROL_POLICY
+      Content:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyRootUser
+            Effect: Deny
+            Action: '*'
+            Resource: '*'
+            Condition:
+              StringLike:
+                'aws:PrincipalArn': 'arn:aws:iam::*:root'
+      TargetIds:
+        - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+        - Fn::ImportValue: !Sub '${AccountsStackName}-WorkloadOUId'
+
+  DenyRegionsPolicy:
+    Type: AWS::Organizations::Policy
+    Properties:
+      Name: !Sub '${ProjectName}-deny-regions'
+      Description: Restrict operations to allowed regions; global services exempt
+      Type: SERVICE_CONTROL_POLICY
+      Content:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyRegions
+            Effect: Deny
+            NotAction:
+              - 'iam:*'
+              - 'organizations:*'
+              - 'route53:*'
+              - 'cloudfront:*'
+              - 'support:*'
+              - 'sts:*'
+              - 'globalaccelerator:*'
+              - 'wafv2:*'
+              - 'waf:*'
+              - 'shield:*'
+              - 's3:ListAllMyBuckets'
+              - 's3:GetAccountPublicAccessBlock'
+              - 's3:PutAccountPublicAccessBlock'
+              - 'tag:*'
+              - 'health:*'
+              - 'trustedadvisor:*'
+              - 'ce:*'
+              - 'cur:*'
+            Resource: '*'
+            Condition:
+              StringNotEquals:
+                'aws:RequestedRegion': !Ref AllowedRegions
+      TargetIds:
+        - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+        - Fn::ImportValue: !Sub '${AccountsStackName}-WorkloadOUId'
+
+  DenyDisableSecurityPolicy:
+    Type: AWS::Organizations::Policy
+    Properties:
+      Name: !Sub '${ProjectName}-deny-disable-security'
+      Description: Prevent disabling CloudTrail, GuardDuty, Config, Security Hub
+      Type: SERVICE_CONTROL_POLICY
+      Content:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyDisableSecurityServices
+            Effect: Deny
+            Action:
+              - 'cloudtrail:DeleteTrail'
+              - 'cloudtrail:PutEventSelectors'
+              - 'cloudtrail:StopLogging'
+              - 'cloudtrail:UpdateTrail'
+              - 'guardduty:DeleteDetector'
+              - 'guardduty:DisassociateFromMasterAccount'
+              - 'guardduty:StopMonitoringMembers'
+              - 'guardduty:UpdateDetector'
+              - 'config:DeleteConfigRule'
+              - 'config:DeleteConfigurationRecorder'
+              - 'config:DeleteDeliveryChannel'
+              - 'config:StopConfigurationRecorder'
+              - 'securityhub:DeleteInvitations'
+              - 'securityhub:DisableSecurityHub'
+              - 'securityhub:DisassociateFromMasterAccount'
+              - 'securityhub:DeleteMembers'
+            Resource: '*'
+      TargetIds:
+        - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+        - Fn::ImportValue: !Sub '${AccountsStackName}-WorkloadOUId'
+
+  DenyLeaveOrgPolicy:
+    Type: AWS::Organizations::Policy
+    Properties:
+      Name: !Sub '${ProjectName}-deny-leave-org'
+      Description: Prevent member accounts from leaving the Organization
+      Type: SERVICE_CONTROL_POLICY
+      Content:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyLeaveOrg
+            Effect: Deny
+            Action: 'organizations:LeaveOrganization'
+            Resource: '*'
+      TargetIds:
+        - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+        - Fn::ImportValue: !Sub '${AccountsStackName}-WorkloadOUId'

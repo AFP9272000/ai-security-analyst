@@ -32,6 +32,10 @@ permissions:
 env:
   TF_VERSION: 1.7.5
   AWS_REGION: us-east-1
+  # Inject TF_VAR_* from secrets. Layers that don't declare the variable
+  # simply ignore the corresponding TF_VAR_*. Add more here as new layers
+  # need new secret variables.
+  TF_VAR_root_email: ${{ secrets.ROOT_EMAIL }}
 
 jobs:
   plan:
@@ -85,7 +89,7 @@ jobs:
     if: inputs.action != 'plan'
     needs: plan
     runs-on: ubuntu-latest
-    environment: prod   # gates manual approval - configure in repo Settings > Environments
+    environment: prod
     steps:
       - uses: actions/checkout@v4
 

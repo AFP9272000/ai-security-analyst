@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Phase 1.2 - OUs and member accounts for ai-security-analyst.
+  Parity equivalent of iac/terraform/01-foundation/accounts.tf.
+  Depends on the org stack exports.
+
+Parameters:
+  RootEmail:
+    Type: String
+    Description: Base Gmail address for + aliasing (e.g. user@gmail.com)
+    NoEcho: true
+    AllowedPattern: '^[^@]+@[^@]+\.[^@]+$'
+
+  OrgStackName:
+    Type: String
+    Default: ai-sec-analyst-01-foundation-org
+    Description: Name of the org stack to import RootId from
+
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+Resources:
+  SecurityOU:
+    Type: AWS::Organizations::OrganizationalUnit
+    Properties:
+      Name: Security
+      ParentId:
+        Fn::ImportValue: !Sub '${OrgStackName}-RootId'
+
+  WorkloadOU:
+    Type: AWS::Organizations::OrganizationalUnit
+    Properties:
+      Name: Workload
+      ParentId:
+        Fn::ImportValue: !Sub '${OrgStackName}-RootId'
+
+  LogArchiveAccount:
+    Type: AWS::Organizations::Account
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AccountName: !Sub '${ProjectName}-log-archive'
+      Email: !Sub
+        - '${Local}+ai-sec-log-archive@${Domain}'
+        - Local: !Select [0, !Split ['@', !Ref RootEmail]]
+          Domain: !Select [1, !Split ['@', !Ref RootEmail]]
+      RoleName: OrganizationAccountAccessRole
+      ParentIds:
+        - !Ref SecurityOU
+
+  SecurityToolingAccount:
+    Type: AWS::Organizations::Account
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AccountName: !Sub '${ProjectName}-security-tooling'
+      Email: !Sub
+        - '${Local}+ai-sec-security-tooling@${Domain}'
+        - Local: !Select [0, !Split ['@', !Ref RootEmail]]
+          Domain: !Select [1, !Split ['@', !Ref RootEmail]]
+      RoleName: OrganizationAccountAccessRole
+      ParentIds:
+        - !Ref SecurityOU
+
+  WorkloadAccount:
+    Type: AWS::Organizations::Account
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AccountName: !Sub '${ProjectName}-workload'
+      Email: !Sub
+        - '${Local}+ai-sec-workload@${Domain}'
+        - Local: !Select [0, !Split ['@', !Ref RootEmail]]
+          Domain: !Select [1, !Split ['@', !Ref RootEmail]]
+      RoleName: OrganizationAccountAccessRole
+      ParentIds:
+        - !Ref WorkloadOU
+
+Outputs:
+  SecurityOUId:
+    Value: !Ref SecurityOU
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityOUId'
+  WorkloadOUId:
+    Value: !Ref WorkloadOU
+    Export:
+      Name: !Sub '${AWS::StackName}-WorkloadOUId'
+  LogArchiveAccountId:
+    Value: !Ref LogArchiveAccount
+    Export:
+      Name: !Sub '${AWS::StackName}-LogArchiveAccountId'
+  SecurityToolingAccountId:
+    Value: !Ref SecurityToolingAccount
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityToolingAccountId'
+  WorkloadAccountId:
+    Value: !Ref WorkloadAccount
+    Export:
+      Name: !Sub '${AWS::StackName}-WorkloadAccountId'

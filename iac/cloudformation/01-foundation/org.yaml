@@ -1,0 +1,36 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Phase 1.2 - AWS Organization root for ai-security-analyst.
+  Parity equivalent of iac/terraform/01-foundation/org.tf.
+  Deploy ONE OR THE OTHER, never both - they target the same resources.
+
+Resources:
+  Organization:
+    Type: AWS::Organizations::Organization
+    Properties:
+      FeatureSet: ALL
+
+Outputs:
+  OrganizationId:
+    Description: Organization ID
+    Value: !Ref Organization
+    Export:
+      Name: !Sub '${AWS::StackName}-OrganizationId'
+
+  OrganizationArn:
+    Description: Organization ARN
+    Value: !GetAtt Organization.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-OrganizationArn'
+
+  RootId:
+    Description: Root OU ID
+    Value: !GetAtt Organization.RootId
+    Export:
+      Name: !Sub '${AWS::StackName}-RootId'
+
+  ManagementAccountId:
+    Description: Management account ID
+    Value: !GetAtt Organization.ManagementAccountId
+    Export:
+      Name: !Sub '${AWS::StackName}-ManagementAccountId'

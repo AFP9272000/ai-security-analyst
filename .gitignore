@@ -1,0 +1,46 @@
+# Terraform
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+tfplan
+plan.txt
+
+# CloudFormation packaged artifacts
+**/packaged.yaml
+**/packaged-template.yaml
+
+# Local AWS credentials & temp files
+.aws/
+credentials
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# Node (if any frontend later)
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Bootstrap output
+backend.hcl
+!iac/terraform/backend.hcl
+
+# Test outputs
+.checkov.json
+.tflint.d/
