@@ -27,49 +27,40 @@ jobs:
           fetch-depth: 0
 
       - id: detect
-        name: Find CFN layers that contain templates
+        name: Find changed CFN layers that contain templates
+        shell: bash
         run: |
           set -uo pipefail
+          shopt -s nullglob
 
-          full_scan=false
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            full_scan=true
+            mapfile -t candidate_layers < <(ls iac/cloudformation 2>/dev/null | grep -E '^[0-9]{2}-' || true)
           else
             base="${{ github.event.pull_request.base.sha }}"
             head="${{ github.event.pull_request.head.sha }}"
-            changed_files=$(git diff --name-only "$base" "$head" || true)
-            # If the workflow file itself changed, scan everything.
-            if echo "$changed_files" | grep -qx '\.github/workflows/cfn-validate\.yml'; then
-              full_scan=true
-            fi
-          fi
-
-          if [[ "$full_scan" == "true" ]]; then
-            candidate_layers=$(ls iac/cloudformation 2>/dev/null | grep -E '^[0-9]{2}-' || true)
-          else
-            candidate_layers=$(echo "$changed_files" \
+            mapfile -t candidate_layers < <(git diff --name-only "$base" "$head" \
               | grep -E '^iac/cloudformation/[0-9]{2}-[a-z-]+/' \
               | awk -F/ '{print $3}' \
               | sort -u || true)
           fi
 
-          # Keep only layers that actually contain CFN templates.
-          # Layers with only README.md (e.g. 00-bootstrap) are skipped.
-          layers_with_templates=""
-          for layer in $candidate_layers; do
-            if ls iac/cloudformation/$layer/*.yaml iac/cloudformation/$layer/*.yml 2>/dev/null | grep -q .; then
-              layers_with_templates+="$layer"$'\n'
+          echo "Candidate layers: ${candidate_layers[*]:-<none>}"
+
+          layers_with_templates=()
+          for layer in "${candidate_layers[@]}"; do
+            templates=( "iac/cloudformation/$layer"/*.yaml "iac/cloudformation/$layer"/*.yml )
+            echo "  $layer -> ${#templates[@]} template(s)"
+            if (( ${#templates[@]} > 0 )); then
+              layers_with_templates+=( "$layer" )
             fi
           done
 
-          if [[ -z "$layers_with_templates" ]]; then
+          if (( ${#layers_with_templates[@]} == 0 )); then
             layers='[]'
           else
-            layers=$(echo "$layers_with_templates" | jq -R -s -c 'split("\n") | map(select(. != ""))')
+            layers=$(printf '%s\n' "${layers_with_templates[@]}" | jq -R -s -c 'split("\n") | map(select(. != ""))')
           fi
 
-          echo "full_scan=$full_scan"
-          echo "candidate_layers=$candidate_layers"
           echo "layers=$layers" >> "$GITHUB_OUTPUT"
           echo "Layers with templates: $layers"
 
@@ -101,32 +92,40 @@ jobs:
         run: sudo gem install cfn-nag --no-document
 
       - name: cfn-lint
+        shell: bash
         working-directory: iac/cloudformation/${{ matrix.layer }}
         run: |
           shopt -s nullglob
           templates=( *.yaml *.yml *.json )
-          if [[ ${#templates[@]} -eq 0 ]]; then
+          if (( ${#templates[@]} == 0 )); then
             echo "No templates in this layer."
             exit 0
           fi
           cfn-lint "${templates[@]}"
 
       - name: cfn-nag
+        shell: bash
         working-directory: iac/cloudformation/${{ matrix.layer }}
         run: |
           shopt -s nullglob
           templates=( *.yaml *.yml )
-          if [[ ${#templates[@]} -eq 0 ]]; then
+          if (( ${#templates[@]} == 0 )); then
             echo "No YAML templates."
             exit 0
           fi
           cfn_nag_scan --input-path .
 
       - name: aws cloudformation validate-template
+        shell: bash
         working-directory: iac/cloudformation/${{ matrix.layer }}
         run: |
           shopt -s nullglob
-          for t in *.yaml *.yml *.json; do
+          templates=( *.yaml *.yml *.json )
+          if (( ${#templates[@]} == 0 )); then
+            echo "No templates."
+            exit 0
+          fi
+          for t in "${templates[@]}"; do
             echo "Validating $t"
             aws cloudformation validate-template --template-body "file://$t"
           done
