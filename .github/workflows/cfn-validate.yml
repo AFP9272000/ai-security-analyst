@@ -1,0 +1,112 @@
+name: cfn-validate
+
+on:
+  pull_request:
+    paths:
+      - 'iac/cloudformation/**'
+      - '.github/workflows/cfn-validate.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  detect-layers:
+    name: Detect changed layers
+    runs-on: ubuntu-latest
+    outputs:
+      layers: ${{ steps.detect.outputs.layers }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: detect
+        name: Find changed CFN layers
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            layers=$(ls iac/cloudformation | grep -E '^[0-9]{2}-' | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          else
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+            layers=$(git diff --name-only "$base" "$head" \
+              | grep -E '^iac/cloudformation/[0-9]{2}-[a-z-]+/' \
+              | awk -F/ '{print $3}' \
+              | sort -u \
+              | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          fi
+          if [[ "$layers" == "[]" || -z "$layers" ]]; then
+            layers='[]'
+          fi
+          echo "layers=$layers" >> "$GITHUB_OUTPUT"
+          echo "Detected layers: $layers"
+
+  validate:
+    name: Validate ${{ matrix.layer }}
+    needs: detect-layers
+    if: needs.detect-layers.outputs.layers != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        layer: ${{ fromJson(needs.detect-layers.outputs.layers) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GHA_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install linters
+        run: |
+          pip install cfn-lint==1.* checkov
+          gem install cfn-nag
+
+      - name: cfn-lint
+        working-directory: iac/cloudformation/${{ matrix.layer }}
+        run: |
+          shopt -s nullglob
+          templates=( *.yaml *.yml *.json )
+          if [[ ${#templates[@]} -eq 0 ]]; then
+            echo "No templates in this layer yet."
+            exit 0
+          fi
+          cfn-lint "${templates[@]}"
+
+      - name: cfn-nag
+        working-directory: iac/cloudformation/${{ matrix.layer }}
+        run: |
+          shopt -s nullglob
+          templates=( *.yaml *.yml )
+          if [[ ${#templates[@]} -eq 0 ]]; then
+            echo "No YAML templates."
+            exit 0
+          fi
+          cfn_nag_scan --input-path .
+
+      - name: aws cloudformation validate-template
+        working-directory: iac/cloudformation/${{ matrix.layer }}
+        run: |
+          shopt -s nullglob
+          for t in *.yaml *.yml *.json; do
+            echo "Validating $t"
+            aws cloudformation validate-template --template-body "file://$t"
+          done
+
+      - uses: bridgecrewio/checkov-action@master
+        with:
+          directory: iac/cloudformation/${{ matrix.layer }}
+          framework: cloudformation
+          quiet: true
+          soft_fail: false

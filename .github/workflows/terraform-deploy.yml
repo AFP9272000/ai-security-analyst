@@ -1,0 +1,115 @@
+name: terraform-deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      layer:
+        description: 'Layer to operate on'
+        required: true
+        type: choice
+        options:
+          - 01-foundation
+          - 02-network
+          - 03-telemetry
+          - 04-data
+          - 05-ml
+          - 06-genai
+          - 07-workload
+      action:
+        description: 'plan / apply / destroy'
+        required: true
+        type: choice
+        default: plan
+        options:
+          - plan
+          - apply
+          - destroy
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: 1.7.5
+  AWS_REGION: us-east-1
+
+jobs:
+  plan:
+    name: Plan ${{ inputs.layer }} (${{ inputs.action }})
+    runs-on: ubuntu-latest
+    outputs:
+      plan-summary: ${{ steps.plan.outputs.summary }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GHA_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: terraform init
+        working-directory: iac/terraform/${{ inputs.layer }}
+        run: |
+          terraform init \
+            -backend-config=../backend.hcl \
+            -backend-config="key=${{ inputs.layer }}/terraform.tfstate"
+
+      - name: terraform plan
+        id: plan
+        working-directory: iac/terraform/${{ inputs.layer }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.action }}" == "destroy" ]]; then
+            terraform plan -destroy -out=tfplan -no-color | tee plan.txt
+          else
+            terraform plan -out=tfplan -no-color | tee plan.txt
+          fi
+          {
+            echo "summary<<EOF"
+            tail -n 30 plan.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ inputs.layer }}
+          path: iac/terraform/${{ inputs.layer }}/tfplan
+          retention-days: 5
+
+  apply:
+    name: ${{ inputs.action }} ${{ inputs.layer }}
+    if: inputs.action != 'plan'
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: prod   # gates manual approval - configure in repo Settings > Environments
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GHA_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ inputs.layer }}
+          path: iac/terraform/${{ inputs.layer }}
+
+      - name: terraform init
+        working-directory: iac/terraform/${{ inputs.layer }}
+        run: |
+          terraform init \
+            -backend-config=../backend.hcl \
+            -backend-config="key=${{ inputs.layer }}/terraform.tfstate"
+
+      - name: terraform apply
+        working-directory: iac/terraform/${{ inputs.layer }}
+        run: terraform apply -auto-approve tfplan

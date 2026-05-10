@@ -1,0 +1,100 @@
+name: terraform-validate
+
+on:
+  pull_request:
+    paths:
+      - 'iac/terraform/**'
+      - '.github/workflows/terraform-validate.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  TF_VERSION: 1.7.5
+  AWS_REGION: us-east-1
+
+jobs:
+  detect-layers:
+    name: Detect changed layers
+    runs-on: ubuntu-latest
+    outputs:
+      layers: ${{ steps.detect.outputs.layers }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: detect
+        name: Find changed Terraform layers
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            # On manual dispatch validate every layer
+            layers=$(ls iac/terraform | grep -E '^[0-9]{2}-' | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          else
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+            layers=$(git diff --name-only "$base" "$head" \
+              | grep -E '^iac/terraform/[0-9]{2}-[a-z-]+/' \
+              | awk -F/ '{print $3}' \
+              | sort -u \
+              | jq -R -s -c 'split("\n") | map(select(. != ""))')
+          fi
+          if [[ "$layers" == "[]" || -z "$layers" ]]; then
+            layers='[]'
+          fi
+          echo "layers=$layers" >> "$GITHUB_OUTPUT"
+          echo "Detected layers: $layers"
+
+  validate:
+    name: Validate ${{ matrix.layer }}
+    needs: detect-layers
+    if: needs.detect-layers.outputs.layers != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        layer: ${{ fromJson(needs.detect-layers.outputs.layers) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GHA_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: terraform fmt
+        working-directory: iac/terraform/${{ matrix.layer }}
+        run: terraform fmt -check -recursive
+
+      - name: terraform init (no backend)
+        working-directory: iac/terraform/${{ matrix.layer }}
+        run: terraform init -backend=false
+
+      - name: terraform validate
+        working-directory: iac/terraform/${{ matrix.layer }}
+        run: terraform validate
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.50.3
+
+      - name: tflint
+        working-directory: iac/terraform/${{ matrix.layer }}
+        run: |
+          tflint --init
+          tflint -f compact
+
+      - uses: bridgecrewio/checkov-action@master
+        with:
+          directory: iac/terraform/${{ matrix.layer }}
+          framework: terraform
+          quiet: true
+          soft_fail: false

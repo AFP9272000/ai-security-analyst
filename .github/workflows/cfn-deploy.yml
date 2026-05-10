@@ -1,0 +1,132 @@
+name: cfn-deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      layer:
+        description: 'Layer to operate on'
+        required: true
+        type: choice
+        options:
+          - 01-foundation
+          - 02-network
+          - 03-telemetry
+          - 04-data
+          - 05-ml
+          - 06-genai
+          - 07-workload
+      action:
+        description: 'changeset / deploy / delete'
+        required: true
+        type: choice
+        default: changeset
+        options:
+          - changeset
+          - deploy
+          - delete
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  PROJECT: ai-sec-analyst
+
+jobs:
+  changeset:
+    name: Changeset for ${{ inputs.layer }}
+    if: inputs.action != 'delete'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GHA_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Generate changesets
+        working-directory: iac/cloudformation/${{ inputs.layer }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          templates=( *.yaml *.yml )
+          if [[ ${#templates[@]} -eq 0 ]]; then
+            echo "::error::No templates found in this layer."
+            exit 1
+          fi
+          for t in "${templates[@]}"; do
+            base="${t%.*}"
+            stack="${PROJECT}-${{ inputs.layer }}-${base}"
+            changeset="cs-$(date +%s)"
+            echo "::group::Changeset for $stack"
+            aws cloudformation deploy \
+              --stack-name "$stack" \
+              --template-file "$t" \
+              --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+              --no-execute-changeset \
+              --tags Project=$PROJECT Layer=${{ inputs.layer }} ManagedBy=cloudformation Environment=prod CostCenter=portfolio || true
+            echo "::endgroup::"
+          done
+
+  deploy:
+    name: Deploy ${{ inputs.layer }}
+    if: inputs.action == 'deploy'
+    needs: changeset
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GHA_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy stacks
+        working-directory: iac/cloudformation/${{ inputs.layer }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for t in *.yaml *.yml; do
+            base="${t%.*}"
+            stack="${PROJECT}-${{ inputs.layer }}-${base}"
+            echo "::group::Deploying $stack"
+            aws cloudformation deploy \
+              --stack-name "$stack" \
+              --template-file "$t" \
+              --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+              --no-fail-on-empty-changeset \
+              --tags Project=$PROJECT Layer=${{ inputs.layer }} ManagedBy=cloudformation Environment=prod CostCenter=portfolio
+            echo "::endgroup::"
+          done
+
+  delete:
+    name: Delete ${{ inputs.layer }}
+    if: inputs.action == 'delete'
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GHA_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Delete stacks
+        working-directory: iac/cloudformation/${{ inputs.layer }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # Delete in reverse alphabetical order (rough dependency reversal)
+          mapfile -t templates < <(ls *.yaml *.yml 2>/dev/null | sort -r)
+          for t in "${templates[@]}"; do
+            base="${t%.*}"
+            stack="${PROJECT}-${{ inputs.layer }}-${base}"
+            echo "::group::Deleting $stack"
+            aws cloudformation delete-stack --stack-name "$stack"
+            aws cloudformation wait stack-delete-complete --stack-name "$stack" || true
+            echo "::endgroup::"
+          done
