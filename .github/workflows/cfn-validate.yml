@@ -27,18 +27,30 @@ jobs:
           fetch-depth: 0
 
       - id: detect
-        name: Find changed CFN layers that contain templates
+        name: Find CFN layers that contain templates
         run: |
-          set -euo pipefail
+          set -uo pipefail
+
+          full_scan=false
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            candidate_layers=$(ls iac/cloudformation | grep -E '^[0-9]{2}-')
+            full_scan=true
           else
             base="${{ github.event.pull_request.base.sha }}"
             head="${{ github.event.pull_request.head.sha }}"
-            candidate_layers=$(git diff --name-only "$base" "$head" \
+            changed_files=$(git diff --name-only "$base" "$head" || true)
+            # If the workflow file itself changed, scan everything.
+            if echo "$changed_files" | grep -qx '\.github/workflows/cfn-validate\.yml'; then
+              full_scan=true
+            fi
+          fi
+
+          if [[ "$full_scan" == "true" ]]; then
+            candidate_layers=$(ls iac/cloudformation 2>/dev/null | grep -E '^[0-9]{2}-' || true)
+          else
+            candidate_layers=$(echo "$changed_files" \
               | grep -E '^iac/cloudformation/[0-9]{2}-[a-z-]+/' \
               | awk -F/ '{print $3}' \
-              | sort -u)
+              | sort -u || true)
           fi
 
           # Keep only layers that actually contain CFN templates.
@@ -56,6 +68,8 @@ jobs:
             layers=$(echo "$layers_with_templates" | jq -R -s -c 'split("\n") | map(select(. != ""))')
           fi
 
+          echo "full_scan=$full_scan"
+          echo "candidate_layers=$candidate_layers"
           echo "layers=$layers" >> "$GITHUB_OUTPUT"
           echo "Layers with templates: $layers"
 
