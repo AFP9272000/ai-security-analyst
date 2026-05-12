@@ -34,3 +34,38 @@ output "account_arns" {
     for k, v in aws_organizations_account.members : k => v.arn
   }
 }
+
+# Identity Center 
+
+output "sso_instance_arn" {
+  description = "IAM Identity Center instance ARN"
+  value       = local.sso_instance_arn
+}
+
+output "sso_identity_store_id" {
+  description = "Identity Store ID backing this Identity Center instance"
+  value       = local.sso_identity_store
+}
+
+output "admin_user_id" {
+  description = "Identity Store user ID for the admin user"
+  value       = aws_identitystore_user.admin.user_id
+}
+
+output "admins_group_id" {
+  description = "Identity Store group ID for the Administrators group"
+  value       = aws_identitystore_group.admins.group_id
+}
+
+output "permission_set_arns" {
+  description = "ARNs of created permission sets, keyed by short name"
+  value = {
+    for k, v in aws_ssoadmin_permission_set.this : k => v.arn
+  }
+}
+
+output "access_portal_login_email" {
+  description = "Email that will receive the Identity Center invitation"
+  value       = var.root_email
+  sensitive   = true
+}

@@ -17,6 +17,10 @@ resource "aws_organizations_policy" "deny_root" {
       }
     }]
   })
+
+  # SCPs require the Org to exist; no attribute reference creates the
+  # dependency for us, so make it explicit.
+  depends_on = [aws_organizations_organization.this]
 }
 
 resource "aws_organizations_policy" "deny_regions" {
@@ -57,6 +61,8 @@ resource "aws_organizations_policy" "deny_regions" {
       }
     }]
   })
+
+  depends_on = [aws_organizations_organization.this]
 }
 
 resource "aws_organizations_policy" "deny_disable_security" {
@@ -90,6 +96,8 @@ resource "aws_organizations_policy" "deny_disable_security" {
       Resource = "*"
     }]
   })
+
+  depends_on = [aws_organizations_organization.this]
 }
 
 resource "aws_organizations_policy" "deny_leave_org" {
@@ -106,6 +114,8 @@ resource "aws_organizations_policy" "deny_leave_org" {
       Resource = "*"
     }]
   })
+
+  depends_on = [aws_organizations_organization.this]
 }
 
 # Attach all SCPs to both OUs (4 policies x 2 OUs = 8 attachments)

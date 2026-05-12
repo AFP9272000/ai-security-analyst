@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: |
-  Phase 1.2 - Service Control Policies for ai-security-analyst.
+  Service Control Policies for ai-security-analyst.
   Parity equivalent of iac/terraform/01-foundation/scps.tf.
 
 Parameters:

@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  IAM Identity Center permission sets for ai-security-analyst.
+
+  PARITY LIMITATION: CloudFormation has no resource types for Identity Store
+  users, groups, or group memberships. Only permission sets and account
+  assignments (which require a pre-existing principal_id) are CFN-managed.
+
+  This template intentionally scopes to permission sets only. User/group
+  lifecycle is managed exclusively by Terraform (sso.tf), demonstrating a
+  real-world dual-IaC tradeoff. See docs/adr/0001-dual-iac-cfn-vs-tf.md
+  (wrap-up).
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  SsoInstanceArn:
+    Type: String
+    Description: |
+      The Identity Center instance ARN. Look up in AWS Console under
+      IAM Identity Center -> Settings, e.g. arn:aws:sso:::instance/ssoins-xxxxxxxxxxxxxxxx.
+      CFN cannot data-source this, so it must be provided as a parameter.
+    AllowedPattern: '^arn:aws:sso:::instance/ssoins-[a-z0-9]{16}$'
+
+Resources:
+  AdminAccessPermissionSet:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: AdminAccess
+      Description: Full administrative access
+      InstanceArn: !Ref SsoInstanceArn
+      SessionDuration: PT8H
+      ManagedPolicies:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Layer
+          Value: 01-foundation
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: Environment
+          Value: prod
+        - Key: CostCenter
+          Value: portfolio
+
+  PowerUserAccessPermissionSet:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: PowerUserAccess
+      Description: Power user access (no IAM management)
+      InstanceArn: !Ref SsoInstanceArn
+      SessionDuration: PT4H
+      ManagedPolicies:
+        - arn:aws:iam::aws:policy/PowerUserAccess
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Layer
+          Value: 01-foundation
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: Environment
+          Value: prod
+        - Key: CostCenter
+          Value: portfolio
+
+  ReadOnlyAccessPermissionSet:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: ReadOnlyAccess
+      Description: Read-only access
+      InstanceArn: !Ref SsoInstanceArn
+      SessionDuration: PT4H
+      ManagedPolicies:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Layer
+          Value: 01-foundation
+        - Key: ManagedBy
+          Value: cloudformation
+        - Key: Environment
+          Value: prod
+        - Key: CostCenter
+          Value: portfolio
+
+Outputs:
+  AdminAccessArn:
+    Value: !GetAtt AdminAccessPermissionSet.PermissionSetArn
+    Export:
+      Name: !Sub '${AWS::StackName}-AdminAccessArn'
+
+  PowerUserAccessArn:
+    Value: !GetAtt PowerUserAccessPermissionSet.PermissionSetArn
+    Export:
+      Name: !Sub '${AWS::StackName}-PowerUserAccessArn'
+
+  ReadOnlyAccessArn:
+    Value: !GetAtt ReadOnlyAccessPermissionSet.PermissionSetArn
+    Export:
+      Name: !Sub '${AWS::StackName}-ReadOnlyAccessArn'

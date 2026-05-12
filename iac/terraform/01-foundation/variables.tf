@@ -26,3 +26,29 @@ variable "allowed_regions" {
   type        = list(string)
   default     = ["us-east-1", "us-east-2"]
 }
+
+# Identity Center user 
+
+variable "sso_username" {
+  description = "Identity Center login username (no spaces; lowercase recommended)"
+  type        = string
+  default     = "addison.p"
+}
+
+variable "sso_display_name" {
+  description = "Display name shown in Identity Center console"
+  type        = string
+  default     = "Addison P."
+}
+
+variable "sso_given_name" {
+  description = "First name (Identity Store name.given_name)"
+  type        = string
+  default     = "Addison"
+}
+
+variable "sso_family_name" {
+  description = "Last name (Identity Store name.family_name)"
+  type        = string
+  default     = "P"
+}

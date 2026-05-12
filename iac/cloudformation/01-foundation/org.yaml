@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: |
-  Phase 1.2 - AWS Organization root for ai-security-analyst.
+  AWS Organization root for ai-security-analyst.
   Parity equivalent of iac/terraform/01-foundation/org.tf.
   Deploy ONE OR THE OTHER, never both - they target the same resources.
 
