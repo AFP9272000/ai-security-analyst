@@ -1,0 +1,79 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Org-level tag policy for ai-security-analyst (detection mode).
+
+  Validates the project's mandatory tag standard across all member accounts.
+  Non-compliance is reported but not blocked. To enforce, add an
+  EnforcedFor block to the policy content listing target resource types.
+
+  Prereq: TAG_POLICY policy type enabled on the Organization (handled in
+  org.yaml via the EnabledPolicyTypes property when CFN is the source of
+  truth, or by Terraform when TF is the source of truth - in this project,
+  Terraform owns the Org).
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  OrgStackName:
+    Type: String
+    Default: ai-sec-analyst-01-foundation-org
+    Description: Stack to import RootId from
+
+Resources:
+  MandatoryTagsPolicy:
+    Type: AWS::Organizations::Policy
+    Properties:
+      Name: !Sub '${ProjectName}-mandatory-tags'
+      Description: !Sub 'Mandatory tag standard for ${ProjectName} resources (detection mode)'
+      Type: TAG_POLICY
+      TargetIds:
+        - Fn::ImportValue: !Sub '${OrgStackName}-RootId'
+      Content:
+        tags:
+          Project:
+            tag_key:
+              '@@assign': Project
+            tag_value:
+              '@@assign':
+                - !Ref ProjectName
+          Layer:
+            tag_key:
+              '@@assign': Layer
+            tag_value:
+              '@@assign':
+                - 00-bootstrap
+                - 01-foundation
+                - 02-network
+                - 03-telemetry
+                - 04-data
+                - 05-ml
+                - 06-genai
+                - 07-workload
+          ManagedBy:
+            tag_key:
+              '@@assign': ManagedBy
+            tag_value:
+              '@@assign':
+                - terraform
+                - cloudformation
+                - bootstrap-script
+          Environment:
+            tag_key:
+              '@@assign': Environment
+            tag_value:
+              '@@assign':
+                - prod
+          CostCenter:
+            tag_key:
+              '@@assign': CostCenter
+            tag_value:
+              '@@assign':
+                - portfolio
+
+Outputs:
+  PolicyId:
+    Value: !Ref MandatoryTagsPolicy
+    Export:
+      Name: !Sub '${AWS::StackName}-PolicyId'
