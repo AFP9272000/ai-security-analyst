@@ -69,3 +69,14 @@ output "access_portal_login_email" {
   value       = var.root_email
   sensitive   = true
 }
+
+# Cross-account DeployRoles
+
+output "deploy_role_arns" {
+  description = "Map of member account name to DeployRole ARN. Layers 02+ should assume_role into the appropriate ARN."
+  value = {
+    log-archive      = aws_iam_role.deploy_log_archive.arn
+    security-tooling = aws_iam_role.deploy_security_tooling.arn
+    workload         = aws_iam_role.deploy_workload.arn
+  }
+}

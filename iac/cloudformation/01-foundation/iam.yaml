@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Cross-account DeployRoles via CloudFormation StackSets.
+
+  Creates a DeployRole in each member account in the Security and Workload
+  OUs. SERVICE_MANAGED permission model means CloudFormation uses its
+  Organizations trusted-access integration to deploy without per-account
+  role bootstrapping.
+
+  PREREQUISITES:
+    1. Trusted access for CloudFormation StackSets must be enabled in
+       AWS Organizations. The Terraform path enables this via
+       aws_service_access_principals. For CFN-only deploys, run once
+       in Management:
+           aws cloudformation activate-organizations-access
+    2. Accounts and OUs must already exist (deployed by accounts.yaml).
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  AccountsStackName:
+    Type: String
+    Default: ai-sec-analyst-01-foundation-accounts
+    Description: Stack name to import Security/Workload OU IDs from
+
+  ManagementAccountId:
+    Type: String
+    AllowedPattern: '^\d{12}$'
+    Description: |
+      Management account ID where gha-bootstrap-role lives. Injected by
+      the deploy workflow from AWS::AccountId of the deploying stack.
+
+Resources:
+  DeployRoleStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Sub '${ProjectName}-deploy-roles'
+      Description: Cross-account DeployRoles for CI/CD
+      PermissionModel: SERVICE_MANAGED
+      AutoDeployment:
+        Enabled: true
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+      CallAs: SELF
+      StackInstancesGroup:
+        - DeploymentTargets:
+            OrganizationalUnitIds:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+              - Fn::ImportValue: !Sub '${AccountsStackName}-WorkloadOUId'
+          Regions:
+            - !Ref AWS::Region
+      TemplateBody:
+        Fn::Sub: |
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: DeployRole in member account, trusted by gha-bootstrap-role in Management
+
+          Resources:
+            DeployRole:
+              Type: AWS::IAM::Role
+              Properties:
+                RoleName: DeployRole
+                Description: CI/CD deploy role - trusted by gha-bootstrap-role in Management
+                MaxSessionDuration: 3600
+                AssumeRolePolicyDocument:
+                  Version: '2012-10-17'
+                  Statement:
+                    - Effect: Allow
+                      Principal:
+                        AWS: arn:aws:iam::${ManagementAccountId}:role/gha-bootstrap-role
+                      Action: sts:AssumeRole
+                ManagedPolicyArns:
+                  - arn:aws:iam::aws:policy/AdministratorAccess
+                Tags:
+                  - Key: Project
+                    Value: ${ProjectName}
+                  - Key: Layer
+                    Value: 01-foundation
+                  - Key: ManagedBy
+                    Value: cloudformation
+
+          Outputs:
+            DeployRoleArn:
+              Value: !GetAtt DeployRole.Arn
+              Export:
+                Name: !Sub '$${AWS::StackName}-DeployRoleArn'
+
+Outputs:
+  StackSetId:
+    Value: !Ref DeployRoleStackSet
+    Export:
+      Name: !Sub '${AWS::StackName}-StackSetId'

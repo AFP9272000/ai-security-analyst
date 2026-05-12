@@ -13,11 +13,3 @@ terraform {
     # and -backend-config="key=01-foundation/terraform.tfstate"
   }
 }
-
-provider "aws" {
-  region = var.region
-
-  default_tags {
-    tags = local.common_tags
-  }
-}

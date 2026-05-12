@@ -8,6 +8,9 @@ resource "aws_organizations_organization" "this" {
     "securityhub.amazonaws.com",
     "sso.amazonaws.com",
     "ram.amazonaws.com",
+    # enables CloudFormation StackSets with SERVICE_MANAGED
+    # permission model to deploy to member accounts via Org integration.
+    "member.org.stacksets.cloudformation.amazonaws.com",
   ]
 
   enabled_policy_types = [

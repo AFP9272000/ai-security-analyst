@@ -47,13 +47,25 @@ jobs:
           role-to-assume: ${{ secrets.AWS_GHA_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Resolve Management account ID
+        id: mgmt
+        run: |
+          MGMT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "id=$MGMT_ID" >> "$GITHUB_OUTPUT"
+          echo "Management account: $MGMT_ID"
+
+      - name: Activate Org access for StackSets (idempotent)
+        run: |
+          # No-op if already enabled; surfaces clearly if Org integration missing.
+          aws cloudformation activate-organizations-access || true
+
       - name: Generate changesets
         working-directory: iac/cloudformation/${{ inputs.layer }}
+        env:
+          MGMT_ID: ${{ steps.mgmt.outputs.id }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          # Alphabetical order matches dependency order for foundation:
-          # org.yaml -> accounts.yaml -> scps.yaml
           mapfile -t templates < <(ls *.yaml *.yml 2>/dev/null | sort)
           if [[ ${#templates[@]} -eq 0 ]]; then
             echo "::error::No templates found in this layer."
@@ -62,11 +74,11 @@ jobs:
           for t in "${templates[@]}"; do
             base="${t%.*}"
             stack="${PROJECT}-${{ inputs.layer }}-${base}"
-            # Per-template parameter injection.
             params=""
-            if [[ "$base" == "accounts" ]]; then
-              params="--parameter-overrides RootEmail=${ROOT_EMAIL}"
-            fi
+            case "$base" in
+              accounts) params="--parameter-overrides RootEmail=${ROOT_EMAIL}" ;;
+              iam)      params="--parameter-overrides ManagementAccountId=${MGMT_ID}" ;;
+            esac
             echo "::group::Changeset for $stack"
             aws cloudformation deploy \
               --stack-name "$stack" \
@@ -92,8 +104,19 @@ jobs:
           role-to-assume: ${{ secrets.AWS_GHA_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Resolve Management account ID
+        id: mgmt
+        run: |
+          MGMT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "id=$MGMT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Activate Org access for StackSets (idempotent)
+        run: aws cloudformation activate-organizations-access || true
+
       - name: Deploy stacks
         working-directory: iac/cloudformation/${{ inputs.layer }}
+        env:
+          MGMT_ID: ${{ steps.mgmt.outputs.id }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -102,9 +125,10 @@ jobs:
             base="${t%.*}"
             stack="${PROJECT}-${{ inputs.layer }}-${base}"
             params=""
-            if [[ "$base" == "accounts" ]]; then
-              params="--parameter-overrides RootEmail=${ROOT_EMAIL}"
-            fi
+            case "$base" in
+              accounts) params="--parameter-overrides RootEmail=${ROOT_EMAIL}" ;;
+              iam)      params="--parameter-overrides ManagementAccountId=${MGMT_ID}" ;;
+            esac
             echo "::group::Deploying $stack"
             aws cloudformation deploy \
               --stack-name "$stack" \
@@ -134,7 +158,6 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          # Reverse alphabetical for dependency teardown order.
           mapfile -t templates < <(ls *.yaml *.yml 2>/dev/null | sort -r)
           for t in "${templates[@]}"; do
             base="${t%.*}"
