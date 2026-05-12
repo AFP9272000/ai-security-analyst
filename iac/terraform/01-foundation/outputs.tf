@@ -35,7 +35,7 @@ output "account_arns" {
   }
 }
 
-# Identity Center 
+# Identity Center
 
 output "sso_instance_arn" {
   description = "IAM Identity Center instance ARN"
@@ -70,13 +70,29 @@ output "access_portal_login_email" {
   sensitive   = true
 }
 
-# Cross-account DeployRoles
+# Cross-account DeployRoles 
 
 output "deploy_role_arns" {
-  description = "Map of member account name to DeployRole ARN. Layers 02+ should assume_role into the appropriate ARN."
+  description = "Map of member account name to DeployRole ARN."
   value = {
     log-archive      = aws_iam_role.deploy_log_archive.arn
     security-tooling = aws_iam_role.deploy_security_tooling.arn
     workload         = aws_iam_role.deploy_workload.arn
   }
+}
+
+# Baseline KMS keys 
+
+output "baseline_key_arns" {
+  description = "Map of member account name to baseline CMK ARN."
+  value = {
+    log-archive      = aws_kms_key.baseline_log_archive.arn
+    security-tooling = aws_kms_key.baseline_security_tooling.arn
+    workload         = aws_kms_key.baseline_workload.arn
+  }
+}
+
+output "baseline_key_alias" {
+  description = "Common alias used in all member accounts."
+  value       = local.baseline_key_alias
 }
