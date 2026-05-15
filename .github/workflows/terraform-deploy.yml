@@ -37,6 +37,7 @@ env:
   # simply ignore the corresponding TF_VAR_*. Add more here as new layers
   # need new secret variables.
   TF_VAR_root_email: ${{ secrets.ROOT_EMAIL }}
+  TF_VAR_codeconnections_arn: ${{ secrets.CODECONNECTIONS_ARN }}
 
 jobs:
   plan:
