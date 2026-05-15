@@ -1,0 +1,37 @@
+version: 0.2
+
+# CodeBuild buildspec: Terraform plan for the LAYER environment variable.
+# Output is captured in the artifact for the apply stage.
+
+env:
+  variables:
+    LAYER: 01-foundation  # default; override at pipeline start time
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - curl -fsSL -o /tmp/tf.zip "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
+      - unzip -q /tmp/tf.zip -d /usr/local/bin
+      - terraform version
+
+  pre_build:
+    commands:
+      - echo "Layer: ${LAYER}"
+      - cd "iac/terraform/${LAYER}"
+      - terraform init -backend-config=../backend.hcl -backend-config="key=${LAYER}/terraform.tfstate"
+
+  build:
+    commands:
+      - set -euo pipefail
+      - terraform plan -out=tfplan -no-color | tee plan.txt
+      - terraform show -json tfplan > plan.json
+
+artifacts:
+  base-directory: iac/terraform/${LAYER}
+  files:
+    - tfplan
+    - plan.txt
+    - plan.json
+  name: tf-plan-output

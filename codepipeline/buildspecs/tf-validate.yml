@@ -1,0 +1,48 @@
+version: 0.2
+
+# CodeBuild buildspec: Terraform validation (parallels GHA terraform-validate.yml)
+# Iterates every layer under iac/terraform that contains .tf files and runs
+# fmt + validate + tflint + checkov against each.
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - echo "Installing Terraform ${TF_VERSION}"
+      - curl -fsSL -o /tmp/tf.zip "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
+      - unzip -q /tmp/tf.zip -d /usr/local/bin
+      - terraform version
+      - pip install -q checkov
+      - curl -fsSL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+
+  build:
+    commands:
+      - set -euo pipefail
+      - shopt -s nullglob
+      - failed=0
+      - |
+        for layer_dir in iac/terraform/[0-9][0-9]*-*/; do
+          layer=$(basename "$layer_dir")
+          tfs=( "$layer_dir"*.tf )
+          if (( ${#tfs[@]} == 0 )); then
+            echo "Skipping $layer (no .tf files)"
+            continue
+          fi
+          echo "=== Validating $layer ==="
+          (
+            cd "$layer_dir"
+            terraform fmt -check -recursive || failed=1
+            terraform init -backend=false || failed=1
+            terraform validate || failed=1
+            tflint --init >/dev/null
+            tflint -f compact || failed=1
+          ) || failed=1
+          checkov -d "$layer_dir" --framework terraform --quiet || failed=1
+        done
+      - |
+        if (( failed != 0 )); then
+          echo "::error::One or more validators failed."
+          exit 1
+        fi
+      - echo "All Terraform layers passed validation."

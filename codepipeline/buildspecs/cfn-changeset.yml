@@ -1,0 +1,42 @@
+version: 0.2
+
+# CodeBuild buildspec, CloudFormation changeset generation for the LAYER.
+
+env:
+  variables:
+    LAYER: 01-foundation
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+
+  pre_build:
+    commands:
+      - echo "Layer: ${LAYER}"
+      - MGMT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - cd "iac/cloudformation/${LAYER}"
+
+  build:
+    commands:
+      - set -euo pipefail
+      - shopt -s nullglob
+      - mapfile -t templates < <(ls *.yaml *.yml 2>/dev/null | sort)
+      - |
+        for t in "${templates[@]}"; do
+          base="${t%.*}"
+          stack="ai-sec-analyst-${LAYER}-${base}"
+          params=""
+          case "$base" in
+            accounts) params="--parameter-overrides RootEmail=${ROOT_EMAIL:-PLACEHOLDER}" ;;
+            iam)      params="--parameter-overrides ManagementAccountId=${MGMT_ID}" ;;
+          esac
+          echo "=== Changeset for $stack ==="
+          aws cloudformation deploy \
+            --stack-name "$stack" \
+            --template-file "$t" \
+            --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
+            --no-execute-changeset \
+            $params \
+            --tags Project=ai-sec-analyst Layer=${LAYER} ManagedBy=cloudformation Environment=prod CostCenter=portfolio || true
+        done

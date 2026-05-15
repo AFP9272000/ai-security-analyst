@@ -8,6 +8,7 @@ on:
         required: true
         type: choice
         options:
+          - 00.5-codepipeline
           - 01-foundation
           - 02-network
           - 03-telemetry

@@ -1,0 +1,31 @@
+version: 0.2
+
+# CodeBuild buildspec: Terraform apply, consumes the plan from prior stage.
+
+env:
+  variables:
+    LAYER: 01-foundation
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - curl -fsSL -o /tmp/tf.zip "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
+      - unzip -q /tmp/tf.zip -d /usr/local/bin
+      - terraform version
+
+  pre_build:
+    commands:
+      - echo "Layer: ${LAYER}"
+      # CodePipeline mounts secondary artifacts at $CODEBUILD_SRC_DIR_<name>
+      # The plan artifact was named "plan" in the pipeline definition.
+      - ls -la "${CODEBUILD_SRC_DIR_plan:-/tmp}" || true
+      - cp "${CODEBUILD_SRC_DIR_plan}/tfplan" "iac/terraform/${LAYER}/tfplan"
+      - cd "iac/terraform/${LAYER}"
+      - terraform init -backend-config=../backend.hcl -backend-config="key=${LAYER}/terraform.tfstate"
+
+  build:
+    commands:
+      - set -euo pipefail
+      - terraform apply -auto-approve tfplan
