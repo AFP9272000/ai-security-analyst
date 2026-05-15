@@ -6,7 +6,7 @@ data "terraform_remote_state" "foundation" {
   config = {
     bucket         = "${var.project}-tfstate-${data.aws_caller_identity.current.account_id}"
     key            = "01-foundation/terraform.tfstate"
-    region         = var.region
+    region         = var.state_region
     dynamodb_table = "${var.project}-tflocks"
     encrypt        = true
   }
@@ -24,10 +24,10 @@ locals {
   mgmt_account_id        = data.aws_caller_identity.current.account_id
   gha_bootstrap_role_arn = "arn:aws:iam::${local.mgmt_account_id}:role/gha-bootstrap-role"
 
-  # All four pipelines provisioned.
+  # All four pipelines we provision.
   pipelines = {
     tf-validate = {
-      buildspec = "codepipeline/buildspecs/tf-validate.yml"
+      buildspec         = "codepipeline/buildspecs/tf-validate.yml"
       requires_approval = false
       apply_buildspec   = null
     }

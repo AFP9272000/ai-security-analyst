@@ -1,6 +1,13 @@
 variable "region" {
-  type    = string
-  default = "us-east-1"
+  description = "Region where the new pipeline resources are created"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "state_region" {
+  description = "Region where the Terraform state bucket physically lives (created by 00-bootstrap)"
+  type        = string
+  default     = "us-east-2"
 }
 
 variable "project" {
