@@ -38,6 +38,7 @@ env:
   # need new secret variables.
   TF_VAR_root_email: ${{ secrets.ROOT_EMAIL }}
   TF_VAR_codeconnections_arn: ${{ secrets.CODECONNECTIONS_ARN }}
+  TF_VAR_codepipeline_layer_deployed: "true"
 
 jobs:
   plan:
