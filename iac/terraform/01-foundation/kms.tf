@@ -1,16 +1,36 @@
-# KMS baseline (Phase 1.6)
+# KMS baseline
 #
-# One general-purpose CMK per member account. Key policy grants kms:* to
-# the account root, which lets account IAM policies further delegate. This
-# matches AWS's default key policy pattern. Layer-specific keys
-# (CloudTrail logs, enriched bucket, SageMaker, etc.) get tighter
-# purpose-scoped policies in their own layers.
+# One general-purpose CMK per member account. Key policy grants:
+#   - Account root: kms:* (delegates further via IAM policies)
+#   - CloudWatch Logs service: encrypt/decrypt log groups in this account
+#   - CloudTrail service: encrypt/decrypt trails delivered to this account
 #
-# Rotation enabled (annual, AWS-managed). Aliased
-# alias/ai-sec-analyst-baseline for cross-account discoverability.
+# Layer-specific keys ship with their own layers using tighter policies.
+#
+# Rotation enabled (annual). Aliased alias/ai-sec-analyst-baseline.
 
 locals {
   baseline_key_alias = "alias/${var.project}-baseline"
+}
+
+# Reusable statement generators - keeps the per-account data sources DRY
+
+# CloudWatch Logs needs the service principal AND a condition scoping to
+# the account's log groups. The service principal is region-specific.
+locals {
+  cw_logs_actions = [
+    "kms:Encrypt*",
+    "kms:Decrypt*",
+    "kms:ReEncrypt*",
+    "kms:GenerateDataKey*",
+    "kms:DescribeKey",
+  ]
+
+  cloudtrail_actions = [
+    "kms:GenerateDataKey*",
+    "kms:DescribeKey",
+    "kms:Decrypt",
+  ]
 }
 
 # log-archive
@@ -27,6 +47,38 @@ data "aws_iam_policy_document" "baseline_log_archive" {
     }
     actions   = ["kms:*"]
     resources = ["*"]
+  }
+
+  statement {
+    sid    = "AllowCloudWatchLogs"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["logs.${var.region}.amazonaws.com"]
+    }
+    actions   = local.cw_logs_actions
+    resources = ["*"]
+    condition {
+      test     = "ArnLike"
+      variable = "kms:EncryptionContext:aws:logs:arn"
+      values   = ["arn:aws:logs:${var.region}:${aws_organizations_account.members["log-archive"].id}:log-group:*"]
+    }
+  }
+
+  statement {
+    sid    = "AllowCloudTrail"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["cloudtrail.amazonaws.com"]
+    }
+    actions   = local.cloudtrail_actions
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [aws_organizations_organization.this.master_account_id]
+    }
   }
 }
 
@@ -63,6 +115,38 @@ data "aws_iam_policy_document" "baseline_security_tooling" {
     actions   = ["kms:*"]
     resources = ["*"]
   }
+
+  statement {
+    sid    = "AllowCloudWatchLogs"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["logs.${var.region}.amazonaws.com"]
+    }
+    actions   = local.cw_logs_actions
+    resources = ["*"]
+    condition {
+      test     = "ArnLike"
+      variable = "kms:EncryptionContext:aws:logs:arn"
+      values   = ["arn:aws:logs:${var.region}:${aws_organizations_account.members["security-tooling"].id}:log-group:*"]
+    }
+  }
+
+  statement {
+    sid    = "AllowCloudTrail"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["cloudtrail.amazonaws.com"]
+    }
+    actions   = local.cloudtrail_actions
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [aws_organizations_organization.this.master_account_id]
+    }
+  }
 }
 
 resource "aws_kms_key" "baseline_security_tooling" {
@@ -97,6 +181,38 @@ data "aws_iam_policy_document" "baseline_workload" {
     }
     actions   = ["kms:*"]
     resources = ["*"]
+  }
+
+  statement {
+    sid    = "AllowCloudWatchLogs"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["logs.${var.region}.amazonaws.com"]
+    }
+    actions   = local.cw_logs_actions
+    resources = ["*"]
+    condition {
+      test     = "ArnLike"
+      variable = "kms:EncryptionContext:aws:logs:arn"
+      values   = ["arn:aws:logs:${var.region}:${aws_organizations_account.members["workload"].id}:log-group:*"]
+    }
+  }
+
+  statement {
+    sid    = "AllowCloudTrail"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["cloudtrail.amazonaws.com"]
+    }
+    actions   = local.cloudtrail_actions
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [aws_organizations_organization.this.master_account_id]
+    }
   }
 }
 
