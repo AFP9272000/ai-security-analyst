@@ -4,6 +4,12 @@ variable "region" {
   default     = "us-east-1"
 }
 
+variable "state_region" {
+  description = "Region where the TF state bucket physically lives (created by 00-bootstrap)"
+  type        = string
+  default     = "us-east-2"
+}
+
 variable "project" {
   description = "Project name prefix"
   type        = string
@@ -30,25 +36,30 @@ variable "allowed_regions" {
 # Identity Center user 
 
 variable "sso_username" {
-  description = "Identity Center login username (no spaces; lowercase recommended)"
+  description = "Identity Center login username"
   type        = string
   default     = "addison.p"
 }
 
 variable "sso_display_name" {
-  description = "Display name shown in Identity Center console"
-  type        = string
-  default     = "Addison P."
+  type    = string
+  default = "Addison P."
 }
 
 variable "sso_given_name" {
-  description = "First name (Identity Store name.given_name)"
-  type        = string
-  default     = "Addison"
+  type    = string
+  default = "Addison"
 }
 
 variable "sso_family_name" {
-  description = "Last name (Identity Store name.family_name)"
-  type        = string
-  default     = "P"
+  type    = string
+  default = "P"
+}
+
+# CodePipeline layer integration 
+
+variable "codepipeline_layer_deployed" {
+  description = "Set true after 00.5-codepipeline has been deployed at least once. Toggles whether DeployRoles trust the CodeBuild service role from that layer."
+  type        = bool
+  default     = false
 }
