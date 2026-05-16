@@ -33,9 +33,6 @@ permissions:
 env:
   TF_VERSION: 1.7.5
   AWS_REGION: us-east-1
-  # Inject TF_VAR_* from secrets. Layers that don't declare the variable
-  # simply ignore the corresponding TF_VAR_*. Add more here as new layers
-  # need new secret variables.
   TF_VAR_root_email: ${{ secrets.ROOT_EMAIL }}
   TF_VAR_codeconnections_arn: ${{ secrets.CODECONNECTIONS_ARN }}
   TF_VAR_codepipeline_layer_deployed: "true"
@@ -44,8 +41,6 @@ jobs:
   plan:
     name: Plan ${{ inputs.layer }} (${{ inputs.action }})
     runs-on: ubuntu-latest
-    outputs:
-      plan-summary: ${{ steps.plan.outputs.summary }}
     steps:
       - uses: actions/checkout@v4
 
@@ -75,11 +70,6 @@ jobs:
           else
             terraform plan -out=tfplan -no-color | tee plan.txt
           fi
-          {
-            echo "summary<<EOF"
-            tail -n 30 plan.txt
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:

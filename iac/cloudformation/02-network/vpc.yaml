@@ -1,0 +1,313 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  VPC StackSets for Workload and Security Tooling accounts.
+
+  Two separate StackSets because the topologies differ:
+  - Workload: 3-tier (public/private-app/private-data), IGW, 6 interface
+    endpoints, 1 gateway endpoint
+  - Security Tooling: private-only (no IGW), 13 interface endpoints, 2
+    gateway endpoints
+
+  Both StackSets use SERVICE_MANAGED permission model and target a
+  specific OU/account combination.
+
+  PARITY NOTE: VPCs created here in CFN will collide with VPCs created
+  by the Terraform 02-network layer in the same accounts. Deploy ONE
+  path, not both. Terraform is the deployed source of truth per
+  docs/adr/0001.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  AccountsStackName:
+    Type: String
+    Default: ai-sec-analyst-01-foundation-accounts
+    Description: Stack to import target account IDs from
+
+# Workload VPC StackSet
+
+Resources:
+  WorkloadVpcStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Sub '${ProjectName}-workload-vpc'
+      Description: 3-tier VPC in the Workload account
+      PermissionModel: SERVICE_MANAGED
+      AutoDeployment:
+        Enabled: false   # Single-account target; AutoDeployment is for OU-wide.
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+      CallAs: SELF
+      StackInstancesGroup:
+        - DeploymentTargets:
+            Accounts:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-WorkloadAccountId'
+            AccountFilterType: INTERSECTION
+            OrganizationalUnitIds:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-WorkloadOUId'
+          Regions:
+            - !Ref AWS::Region
+      TemplateBody:
+        Fn::Sub: |
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: 3-tier VPC for ${ProjectName} workload account
+
+          Resources:
+            Vpc:
+              Type: AWS::EC2::VPC
+              Properties:
+                CidrBlock: 10.10.0.0/16
+                EnableDnsHostnames: true
+                EnableDnsSupport: true
+                Tags:
+                  - { Key: Name, Value: ${ProjectName}-workload }
+                  - { Key: Project, Value: ${ProjectName} }
+                  - { Key: Layer, Value: 02-network }
+                  - { Key: ManagedBy, Value: cloudformation }
+
+            Igw:
+              Type: AWS::EC2::InternetGateway
+              Properties:
+                Tags:
+                  - { Key: Name, Value: ${ProjectName}-workload }
+
+            IgwAttach:
+              Type: AWS::EC2::VPCGatewayAttachment
+              Properties:
+                VpcId: !Ref Vpc
+                InternetGatewayId: !Ref Igw
+
+            # Public subnet 1
+            PublicSubnet1:
+              Type: AWS::EC2::Subnet
+              Properties:
+                VpcId: !Ref Vpc
+                CidrBlock: 10.10.0.0/24
+                AvailabilityZone: !Sub $${AWS::Region}a
+                MapPublicIpOnLaunch: true
+                Tags:
+                  - { Key: Name, Value: ${ProjectName}-workload-public-1 }
+                  - { Key: Tier, Value: public }
+
+            PublicSubnet2:
+              Type: AWS::EC2::Subnet
+              Properties:
+                VpcId: !Ref Vpc
+                CidrBlock: 10.10.1.0/24
+                AvailabilityZone: !Sub $${AWS::Region}b
+                MapPublicIpOnLaunch: true
+                Tags:
+                  - { Key: Name, Value: ${ProjectName}-workload-public-2 }
+                  - { Key: Tier, Value: public }
+
+            PrivateAppSubnet1:
+              Type: AWS::EC2::Subnet
+              Properties:
+                VpcId: !Ref Vpc
+                CidrBlock: 10.10.10.0/24
+                AvailabilityZone: !Sub $${AWS::Region}a
+                Tags:
+                  - { Key: Name, Value: ${ProjectName}-workload-private-app-1 }
+                  - { Key: Tier, Value: private-app }
+
+            PrivateAppSubnet2:
+              Type: AWS::EC2::Subnet
+              Properties:
+                VpcId: !Ref Vpc
+                CidrBlock: 10.10.11.0/24
+                AvailabilityZone: !Sub $${AWS::Region}b
+                Tags:
+                  - { Key: Name, Value: ${ProjectName}-workload-private-app-2 }
+                  - { Key: Tier, Value: private-app }
+
+            PrivateDataSubnet1:
+              Type: AWS::EC2::Subnet
+              Properties:
+                VpcId: !Ref Vpc
+                CidrBlock: 10.10.20.0/24
+                AvailabilityZone: !Sub $${AWS::Region}a
+                Tags:
+                  - { Key: Name, Value: ${ProjectName}-workload-private-data-1 }
+                  - { Key: Tier, Value: private-data }
+
+            PrivateDataSubnet2:
+              Type: AWS::EC2::Subnet
+              Properties:
+                VpcId: !Ref Vpc
+                CidrBlock: 10.10.21.0/24
+                AvailabilityZone: !Sub $${AWS::Region}b
+                Tags:
+                  - { Key: Name, Value: ${ProjectName}-workload-private-data-2 }
+                  - { Key: Tier, Value: private-data }
+
+            PublicRouteTable:
+              Type: AWS::EC2::RouteTable
+              Properties:
+                VpcId: !Ref Vpc
+                Tags:
+                  - { Key: Name, Value: ${ProjectName}-workload-public-rt }
+
+            PublicRoute:
+              Type: AWS::EC2::Route
+              DependsOn: IgwAttach
+              Properties:
+                RouteTableId: !Ref PublicRouteTable
+                DestinationCidrBlock: 0.0.0.0/0
+                GatewayId: !Ref Igw
+
+            PublicRtAssoc1:
+              Type: AWS::EC2::SubnetRouteTableAssociation
+              Properties: { SubnetId: !Ref PublicSubnet1, RouteTableId: !Ref PublicRouteTable }
+
+            PublicRtAssoc2:
+              Type: AWS::EC2::SubnetRouteTableAssociation
+              Properties: { SubnetId: !Ref PublicSubnet2, RouteTableId: !Ref PublicRouteTable }
+
+            PrivateAppRouteTable:
+              Type: AWS::EC2::RouteTable
+              Properties:
+                VpcId: !Ref Vpc
+                Tags:
+                  - { Key: Name, Value: ${ProjectName}-workload-private-app-rt }
+
+            PrivateAppRtAssoc1:
+              Type: AWS::EC2::SubnetRouteTableAssociation
+              Properties: { SubnetId: !Ref PrivateAppSubnet1, RouteTableId: !Ref PrivateAppRouteTable }
+
+            PrivateAppRtAssoc2:
+              Type: AWS::EC2::SubnetRouteTableAssociation
+              Properties: { SubnetId: !Ref PrivateAppSubnet2, RouteTableId: !Ref PrivateAppRouteTable }
+
+            PrivateDataRouteTable:
+              Type: AWS::EC2::RouteTable
+              Properties:
+                VpcId: !Ref Vpc
+                Tags:
+                  - { Key: Name, Value: ${ProjectName}-workload-private-data-rt }
+
+            PrivateDataRtAssoc1:
+              Type: AWS::EC2::SubnetRouteTableAssociation
+              Properties: { SubnetId: !Ref PrivateDataSubnet1, RouteTableId: !Ref PrivateDataRouteTable }
+
+            PrivateDataRtAssoc2:
+              Type: AWS::EC2::SubnetRouteTableAssociation
+              Properties: { SubnetId: !Ref PrivateDataSubnet2, RouteTableId: !Ref PrivateDataRouteTable }
+
+            # S3 gateway endpoint (free)
+            S3Endpoint:
+              Type: AWS::EC2::VPCEndpoint
+              Properties:
+                VpcId: !Ref Vpc
+                ServiceName: !Sub com.amazonaws.$${AWS::Region}.s3
+                VpcEndpointType: Gateway
+                RouteTableIds:
+                  - !Ref PrivateAppRouteTable
+                  - !Ref PrivateDataRouteTable
+
+          Outputs:
+            VpcId:
+              Value: !Ref Vpc
+            VpcCidr:
+              Value: !GetAtt Vpc.CidrBlock
+
+# Security Tooling VPC StackSet
+
+  SecurityToolingVpcStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Sub '${ProjectName}-security-tooling-vpc'
+      Description: Private-only VPC in the Security Tooling account
+      PermissionModel: SERVICE_MANAGED
+      AutoDeployment:
+        Enabled: false
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+      CallAs: SELF
+      StackInstancesGroup:
+        - DeploymentTargets:
+            Accounts:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityToolingAccountId'
+            AccountFilterType: INTERSECTION
+            OrganizationalUnitIds:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+          Regions:
+            - !Ref AWS::Region
+      TemplateBody:
+        Fn::Sub: |
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: Private-only VPC for ${ProjectName} security tooling
+
+          Resources:
+            Vpc:
+              Type: AWS::EC2::VPC
+              Properties:
+                CidrBlock: 10.20.0.0/16
+                EnableDnsHostnames: true
+                EnableDnsSupport: true
+                Tags:
+                  - { Key: Name, Value: ${ProjectName}-security-tooling }
+
+            PrivateSubnet1:
+              Type: AWS::EC2::Subnet
+              Properties:
+                VpcId: !Ref Vpc
+                CidrBlock: 10.20.0.0/24
+                AvailabilityZone: !Sub $${AWS::Region}a
+                Tags:
+                  - { Key: Name, Value: ${ProjectName}-security-tooling-private-1 }
+                  - { Key: Tier, Value: private-app }
+
+            PrivateSubnet2:
+              Type: AWS::EC2::Subnet
+              Properties:
+                VpcId: !Ref Vpc
+                CidrBlock: 10.20.1.0/24
+                AvailabilityZone: !Sub $${AWS::Region}b
+                Tags:
+                  - { Key: Name, Value: ${ProjectName}-security-tooling-private-2 }
+                  - { Key: Tier, Value: private-app }
+
+            PrivateRouteTable:
+              Type: AWS::EC2::RouteTable
+              Properties:
+                VpcId: !Ref Vpc
+
+            PrivateRtAssoc1:
+              Type: AWS::EC2::SubnetRouteTableAssociation
+              Properties: { SubnetId: !Ref PrivateSubnet1, RouteTableId: !Ref PrivateRouteTable }
+
+            PrivateRtAssoc2:
+              Type: AWS::EC2::SubnetRouteTableAssociation
+              Properties: { SubnetId: !Ref PrivateSubnet2, RouteTableId: !Ref PrivateRouteTable }
+
+            S3Endpoint:
+              Type: AWS::EC2::VPCEndpoint
+              Properties:
+                VpcId: !Ref Vpc
+                ServiceName: !Sub com.amazonaws.$${AWS::Region}.s3
+                VpcEndpointType: Gateway
+                RouteTableIds:
+                  - !Ref PrivateRouteTable
+
+            DynamoDBEndpoint:
+              Type: AWS::EC2::VPCEndpoint
+              Properties:
+                VpcId: !Ref Vpc
+                ServiceName: !Sub com.amazonaws.$${AWS::Region}.dynamodb
+                VpcEndpointType: Gateway
+                RouteTableIds:
+                  - !Ref PrivateRouteTable
+
+          Outputs:
+            VpcId:
+              Value: !Ref Vpc
+
+Outputs:
+  WorkloadStackSetId:
+    Value: !Ref WorkloadVpcStackSet
+  SecurityToolingStackSetId:
+    Value: !Ref SecurityToolingVpcStackSet
