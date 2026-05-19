@@ -1,4 +1,4 @@
-# Log archive 
+# Log archive
 
 output "log_archive_bucket_name" {
   value = aws_s3_bucket.log_archive.id
@@ -20,9 +20,8 @@ output "cloudtrail_name" {
 
 # GuardDuty (Part 1)
 #
-# Note: member account enrollment is auto-managed by org config, not
-# explicit aws_guardduty_member resources. Use the AWS CLI to list
-# current members at runtime:
+# Member enrollment is auto-managed by org config. Query the live
+# membership at runtime:
 #   aws guardduty list-members --detector-id <DETECTOR_ID> --profile security-tooling
 
 output "guardduty_detector_id" {
@@ -33,20 +32,15 @@ output "guardduty_admin_account_id" {
   value = local.security_tooling_id
 }
 
-# Security Hub 
+# Security Hub ( standards subscriptions intentionally skipped)
+#
+# See docs/adr/0008-skip-security-hub-standards.md.
 
 output "securityhub_account_id" {
   value = aws_securityhub_account.main.id
 }
 
-output "securityhub_standards_subscribed" {
-  value = [
-    aws_securityhub_standards_subscription.afsbp.standards_arn,
-    aws_securityhub_standards_subscription.cis.standards_arn,
-  ]
-}
-
-# EventBridge 
+# EventBridge (Part 2)
 
 output "security_findings_bus_name" {
   value = aws_cloudwatch_event_bus.security_findings.name
@@ -61,7 +55,7 @@ output "findings_placeholder_log_group" {
   value       = aws_cloudwatch_log_group.findings_placeholder.name
 }
 
-# Config 
+# Config (Part 2)
 
 output "config_aggregator_arn" {
   value = aws_config_configuration_aggregator.org.arn
