@@ -4,12 +4,14 @@ resource "aws_organizations_organization" "this" {
   aws_service_access_principals = [
     "cloudtrail.amazonaws.com",
     "config.amazonaws.com",
+    # Required for AWS Config multi-account aggregator features. Separate
+    # from config.amazonaws.com, both must be enabled for delegated
+    # administrator of Config to work end-to-end.
+    "config-multiaccountsetup.amazonaws.com",
     "guardduty.amazonaws.com",
     "securityhub.amazonaws.com",
     "sso.amazonaws.com",
     "ram.amazonaws.com",
-    # enables CloudFormation StackSets with SERVICE_MANAGED
-    # permission model to deploy to member accounts via Org integration.
     "member.org.stacksets.cloudformation.amazonaws.com",
   ]
 
