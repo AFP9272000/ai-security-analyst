@@ -90,6 +90,11 @@ resource "aws_s3_bucket_lifecycle_configuration" "log_archive" {
 }
 
 # Bucket policy: only CloudTrail org trail from Management can write.
+#
+# CHANGED v2: dropped s3:x-amz-acl condition. Buckets default to
+# BucketOwnerEnforced ownership which disables ACLs, so CloudTrail does
+# not (and cannot) send the bucket-owner-full-control ACL header. Keeping
+# aws:SourceArn and adding aws:SourceAccount for defense-in-depth.
 
 data "aws_iam_policy_document" "log_archive_bucket" {
   statement {
@@ -121,14 +126,14 @@ data "aws_iam_policy_document" "log_archive_bucket" {
 
     condition {
       test     = "StringEquals"
-      variable = "s3:x-amz-acl"
-      values   = ["bucket-owner-full-control"]
+      variable = "aws:SourceArn"
+      values   = ["arn:aws:cloudtrail:${var.region}:${local.mgmt_account_id}:trail/${var.project}-org-trail"]
     }
 
     condition {
       test     = "StringEquals"
-      variable = "aws:SourceArn"
-      values   = ["arn:aws:cloudtrail:${var.region}:${local.mgmt_account_id}:trail/${var.project}-org-trail"]
+      variable = "aws:SourceAccount"
+      values   = [local.mgmt_account_id]
     }
   }
 

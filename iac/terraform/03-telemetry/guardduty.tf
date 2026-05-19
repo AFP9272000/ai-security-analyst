@@ -3,6 +3,20 @@
 # Detector enabled. Org-level configuration auto-enables GuardDuty in
 # every existing and future member account. Member accounts publish
 # findings to the delegated admin's detector for a single pane of glass.
+#
+# NOTE v2: The detector was auto-created when foundation
+# registered Security Tooling as the GuardDuty delegated administrator.
+# We import that existing detector into state rather than creating a new
+# one. Replace <DETECTOR_ID> below with the value from:
+#   aws guardduty list-detectors --profile security-tooling --query 'DetectorIds[0]' --output text
+#
+# After a successful apply, the import block can be removed (state will
+# already reflect the resource).
+
+import {
+  to = aws_guardduty_detector.main
+  id = "<DETECTOR_ID>"
+}
 
 resource "aws_guardduty_detector" "main" {
   provider = aws.security_tooling
@@ -16,13 +30,13 @@ resource "aws_guardduty_detector" "main" {
     }
     kubernetes {
       audit_logs {
-        enable = false   # No EKS in this project.
+        enable = false # No EKS in this project.
       }
     }
     malware_protection {
       scan_ec2_instance_with_findings {
         ebs_volumes {
-          enable = false   # Avoids per-scan charges; phase-9 attack sims can re-enable.
+          enable = false # Avoids per-scan charges; phase-9 attack sims can re-enable.
         }
       }
     }
