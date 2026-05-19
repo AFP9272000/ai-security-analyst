@@ -67,7 +67,7 @@ resource "aws_securityhub_standards_subscription" "afsbp" {
   depends_on = [aws_securityhub_account.main]
 
   timeouts {
-    create = "15m"
+    create = "25m"
   }
 }
 
@@ -79,6 +79,6 @@ resource "aws_securityhub_standards_subscription" "cis" {
   depends_on = [aws_securityhub_account.main]
 
   timeouts {
-    create = "15m"
+    create = "25m"
   }
 }
