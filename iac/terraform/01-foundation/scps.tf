@@ -18,8 +18,6 @@ resource "aws_organizations_policy" "deny_root" {
     }]
   })
 
-  # SCPs require the Org to exist; no attribute reference creates the
-  # dependency for us, so make it explicit.
   depends_on = [aws_organizations_organization.this]
 }
 
@@ -65,9 +63,19 @@ resource "aws_organizations_policy" "deny_regions" {
   depends_on = [aws_organizations_organization.this]
 }
 
+# REVISED deny_disable_security narrowed to destructive actions only.
+#
+# Original version blocked Update* and Put* APIs (e.g. UpdateDetector,
+# UpdateTrail, PutEventSelectors), which broke legitimate config changes
+# made by Terraform during normal layer deploys.
+#
+# Real-world lesson: SCPs that aim to "prevent disabling security" should
+# allowlist *destructive* APIs (Delete, Stop, Disable, Disassociate) only
+# and never include configuration APIs. ADR-0007 (deferred) covers this.
+
 resource "aws_organizations_policy" "deny_disable_security" {
   name        = "${var.project}-deny-disable-security"
-  description = "Prevent disabling CloudTrail, GuardDuty, Config, Security Hub"
+  description = "Prevent deletion or disabling of CloudTrail, GuardDuty, Config, Security Hub"
   type        = "SERVICE_CONTROL_POLICY"
 
   content = jsonencode({
@@ -76,18 +84,23 @@ resource "aws_organizations_policy" "deny_disable_security" {
       Sid    = "DenyDisableSecurityServices"
       Effect = "Deny"
       Action = [
+        # CloudTrail - destructive only
         "cloudtrail:DeleteTrail",
-        "cloudtrail:PutEventSelectors",
         "cloudtrail:StopLogging",
-        "cloudtrail:UpdateTrail",
+
+        # GuardDuty - destructive only; UpdateDetector removed (legitimate
+        # config tool); protection comes from DeleteDetector + Disassociate
         "guardduty:DeleteDetector",
         "guardduty:DisassociateFromMasterAccount",
         "guardduty:StopMonitoringMembers",
-        "guardduty:UpdateDetector",
+
+        # Config - destructive only
         "config:DeleteConfigRule",
         "config:DeleteConfigurationRecorder",
         "config:DeleteDeliveryChannel",
         "config:StopConfigurationRecorder",
+
+        # Security Hub - destructive only
         "securityhub:DeleteInvitations",
         "securityhub:DisableSecurityHub",
         "securityhub:DisassociateFromMasterAccount",
@@ -118,7 +131,6 @@ resource "aws_organizations_policy" "deny_leave_org" {
   depends_on = [aws_organizations_organization.this]
 }
 
-# Attach all SCPs to both OUs (4 policies x 2 OUs = 8 attachments)
 locals {
   scp_attachments = {
     for pair in setproduct(

@@ -1,10 +1,4 @@
 # CloudTrail log archive bucket (in Log Archive account)
-#
-# Object Lock enabled in GOVERNANCE mode for tear-down friendliness on a
-# portfolio project. Production would use COMPLIANCE mode.
-#
-# Bucket policy permits the CloudTrail service to write objects, scoped
-# to org trails from the Management account.
 
 resource "aws_s3_bucket" "log_archive" {
   provider = aws.log_archive
@@ -12,8 +6,6 @@ resource "aws_s3_bucket" "log_archive" {
   bucket              = "${var.project}-cloudtrail-logs-${local.log_archive_account_id}"
   object_lock_enabled = true
 
-  # Portfolio project: allow destroy to wipe contents. Production would
-  # have force_destroy = false.
   force_destroy = true
 }
 
@@ -89,12 +81,12 @@ resource "aws_s3_bucket_lifecycle_configuration" "log_archive" {
   }
 }
 
-# Bucket policy: only CloudTrail org trail from Management can write.
+# Bucket policy
 #
-# CHANGED v2: dropped s3:x-amz-acl condition. Buckets default to
-# BucketOwnerEnforced ownership which disables ACLs, so CloudTrail does
-# not (and cannot) send the bucket-owner-full-control ACL header. Keeping
-# aws:SourceArn and adding aws:SourceAccount for defense-in-depth.
+# REVISED v3: AWS pre-create validation writes a test object to BOTH
+# "AWSLogs/<MGMT_ID>/*" and "AWSLogs/<orgID>/*" paths. Org trails use the
+# orgID-prefixed path in production, but the validation step uses the
+# MGMT path. Policy must allow both.
 
 data "aws_iam_policy_document" "log_archive_bucket" {
   statement {
@@ -121,8 +113,11 @@ data "aws_iam_policy_document" "log_archive_bucket" {
       type        = "Service"
       identifiers = ["cloudtrail.amazonaws.com"]
     }
-    actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.log_archive.arn}/AWSLogs/${local.org_id}/*"]
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.log_archive.arn}/AWSLogs/${local.mgmt_account_id}/*",
+      "${aws_s3_bucket.log_archive.arn}/AWSLogs/${local.org_id}/*",
+    ]
 
     condition {
       test     = "StringEquals"
