@@ -1,0 +1,72 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  GuardDuty in Security Tooling (delegated admin).
+
+  StackSet deploys the GuardDuty detector and org configuration into
+  the Security Tooling account. Member auto-enroll handled by the
+  detector's org config; the per-member CloudFormation resources are
+  omitted because GuardDuty's org-config reconciliation enrolls them
+  within minutes.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  AccountsStackName:
+    Type: String
+    Default: ai-sec-analyst-01-foundation-accounts
+
+Resources:
+  GuardDutyStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Sub '${ProjectName}-guardduty'
+      Description: GuardDuty detector in delegated admin (Security Tooling)
+      PermissionModel: SERVICE_MANAGED
+      AutoDeployment:
+        Enabled: false
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+      CallAs: SELF
+      StackInstancesGroup:
+        - DeploymentTargets:
+            Accounts:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityToolingAccountId'
+            AccountFilterType: INTERSECTION
+            OrganizationalUnitIds:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+          Regions:
+            - !Ref AWS::Region
+      TemplateBody:
+        Fn::Sub: |
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: GuardDuty detector
+          Resources:
+            Detector:
+              Type: AWS::GuardDuty::Detector
+              Properties:
+                Enable: true
+                FindingPublishingFrequency: FIFTEEN_MINUTES
+                DataSources:
+                  S3Logs:
+                    Enable: true
+                  Kubernetes:
+                    AuditLogs:
+                      Enable: false
+                  MalwareProtection:
+                    ScanEc2InstanceWithFindings:
+                      EbsVolumes: false
+                Tags:
+                  - { Key: Project, Value: ${ProjectName} }
+                  - { Key: Layer, Value: 03-telemetry }
+                  - { Key: ManagedBy, Value: cloudformation }
+
+          Outputs:
+            DetectorId:
+              Value: !Ref Detector
+
+Outputs:
+  StackSetId:
+    Value: !Ref GuardDutyStackSet

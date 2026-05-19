@@ -1,0 +1,153 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  CloudTrail log archive bucket in the log-archive account.
+
+  StackSet with SERVICE_MANAGED permission model, single-account target.
+
+  PARITY NOTE: Same bucket would be created by the Terraform path. Deploy
+  only one IaC path. Terraform is the deployed source of truth.
+
+# cfn-lint cannot statically analyze references inside an inline StackSet
+# TemplateBody. E1019 fires because resources defined inside the inner
+# template are not visible to the outer-template linter. The inner refs
+# are valid, CloudFormation parses them correctly at deploy time.
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - E1019
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  AccountsStackName:
+    Type: String
+    Default: ai-sec-analyst-01-foundation-accounts
+
+  OrganizationId:
+    Type: String
+    AllowedPattern: '^o-[a-z0-9]{10,32}$'
+
+  ManagementAccountId:
+    Type: String
+    AllowedPattern: '^\d{12}$'
+
+Resources:
+  LogArchiveBucketStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Sub '${ProjectName}-cloudtrail-log-archive'
+      Description: Immutable CloudTrail log archive bucket
+      PermissionModel: SERVICE_MANAGED
+      AutoDeployment:
+        Enabled: false
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+      CallAs: SELF
+      StackInstancesGroup:
+        - DeploymentTargets:
+            Accounts:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-LogArchiveAccountId'
+            AccountFilterType: INTERSECTION
+            OrganizationalUnitIds:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+          Regions:
+            - !Ref AWS::Region
+      TemplateBody:
+        Fn::Sub: |
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: CloudTrail log archive bucket
+
+          Resources:
+            Bucket:
+              Type: AWS::S3::Bucket
+              DeletionPolicy: Retain
+              UpdateReplacePolicy: Retain
+              Properties:
+                BucketName: !Sub ${ProjectName}-cloudtrail-logs-$${AWS::AccountId}
+                ObjectLockEnabled: true
+                ObjectLockConfiguration:
+                  ObjectLockEnabled: Enabled
+                  Rule:
+                    DefaultRetention:
+                      Mode: GOVERNANCE
+                      Days: 365
+                VersioningConfiguration:
+                  Status: Enabled
+                PublicAccessBlockConfiguration:
+                  BlockPublicAcls: true
+                  BlockPublicPolicy: true
+                  IgnorePublicAcls: true
+                  RestrictPublicBuckets: true
+                BucketEncryption:
+                  ServerSideEncryptionConfiguration:
+                    - ServerSideEncryptionByDefault:
+                        SSEAlgorithm: aws:kms
+                        KMSMasterKeyID: alias/${ProjectName}-baseline
+                      BucketKeyEnabled: true
+                LifecycleConfiguration:
+                  Rules:
+                    - Id: transition-to-cheaper-storage
+                      Status: Enabled
+                      Transitions:
+                        - StorageClass: STANDARD_IA
+                          TransitionInDays: 90
+                        - StorageClass: GLACIER_IR
+                          TransitionInDays: 180
+                Tags:
+                  - Key: Project
+                    Value: ${ProjectName}
+                  - Key: Layer
+                    Value: 03-telemetry
+                  - Key: ManagedBy
+                    Value: cloudformation
+
+            BucketPolicy:
+              Type: AWS::S3::BucketPolicy
+              Properties:
+                Bucket: !Ref Bucket
+                PolicyDocument:
+                  Version: '2012-10-17'
+                  Statement:
+                    - Sid: AWSCloudTrailAclCheck
+                      Effect: Allow
+                      Principal:
+                        Service: cloudtrail.amazonaws.com
+                      Action: s3:GetBucketAcl
+                      Resource: !GetAtt Bucket.Arn
+                      Condition:
+                        StringEquals:
+                          aws:SourceArn: !Sub arn:aws:cloudtrail:$${AWS::Region}:${ManagementAccountId}:trail/${ProjectName}-org-trail
+                    - Sid: AWSCloudTrailWrite
+                      Effect: Allow
+                      Principal:
+                        Service: cloudtrail.amazonaws.com
+                      Action: s3:PutObject
+                      Resource: !Sub $${Bucket.Arn}/AWSLogs/${OrganizationId}/*
+                      Condition:
+                        StringEquals:
+                          s3:x-amz-acl: bucket-owner-full-control
+                          aws:SourceArn: !Sub arn:aws:cloudtrail:$${AWS::Region}:${ManagementAccountId}:trail/${ProjectName}-org-trail
+                    - Sid: DenyInsecureTransport
+                      Effect: Deny
+                      Principal: '*'
+                      Action: s3:*
+                      Resource:
+                        - !GetAtt Bucket.Arn
+                        - !Sub $${Bucket.Arn}/*
+                      Condition:
+                        Bool:
+                          aws:SecureTransport: 'false'
+
+          Outputs:
+            BucketName:
+              Value: !Ref Bucket
+            BucketArn:
+              Value: !GetAtt Bucket.Arn
+
+Outputs:
+  StackSetId:
+    Value: !Ref LogArchiveBucketStackSet

@@ -52,17 +52,21 @@ jobs:
         run: |
           MGMT_ID=$(aws sts get-caller-identity --query Account --output text)
           echo "id=$MGMT_ID" >> "$GITHUB_OUTPUT"
-          echo "Management account: $MGMT_ID"
+
+      - name: Resolve Organization ID
+        id: org
+        run: |
+          ORG_ID=$(aws organizations describe-organization --query Organization.Id --output text)
+          echo "id=$ORG_ID" >> "$GITHUB_OUTPUT"
 
       - name: Activate Org access for StackSets (idempotent)
-        run: |
-          # No-op if already enabled; surfaces clearly if Org integration missing.
-          aws cloudformation activate-organizations-access || true
+        run: aws cloudformation activate-organizations-access || true
 
       - name: Generate changesets
         working-directory: iac/cloudformation/${{ inputs.layer }}
         env:
           MGMT_ID: ${{ steps.mgmt.outputs.id }}
+          ORG_ID: ${{ steps.org.outputs.id }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -76,8 +80,9 @@ jobs:
             stack="${PROJECT}-${{ inputs.layer }}-${base}"
             params=""
             case "$base" in
-              accounts) params="--parameter-overrides RootEmail=${ROOT_EMAIL}" ;;
-              iam)      params="--parameter-overrides ManagementAccountId=${MGMT_ID}" ;;
+              accounts)            params="--parameter-overrides RootEmail=${ROOT_EMAIL}" ;;
+              iam)                 params="--parameter-overrides ManagementAccountId=${MGMT_ID}" ;;
+              log-archive-bucket)  params="--parameter-overrides OrganizationId=${ORG_ID} ManagementAccountId=${MGMT_ID}" ;;
             esac
             echo "::group::Changeset for $stack"
             aws cloudformation deploy \
@@ -110,6 +115,12 @@ jobs:
           MGMT_ID=$(aws sts get-caller-identity --query Account --output text)
           echo "id=$MGMT_ID" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve Organization ID
+        id: org
+        run: |
+          ORG_ID=$(aws organizations describe-organization --query Organization.Id --output text)
+          echo "id=$ORG_ID" >> "$GITHUB_OUTPUT"
+
       - name: Activate Org access for StackSets (idempotent)
         run: aws cloudformation activate-organizations-access || true
 
@@ -117,6 +128,7 @@ jobs:
         working-directory: iac/cloudformation/${{ inputs.layer }}
         env:
           MGMT_ID: ${{ steps.mgmt.outputs.id }}
+          ORG_ID: ${{ steps.org.outputs.id }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -126,8 +138,9 @@ jobs:
             stack="${PROJECT}-${{ inputs.layer }}-${base}"
             params=""
             case "$base" in
-              accounts) params="--parameter-overrides RootEmail=${ROOT_EMAIL}" ;;
-              iam)      params="--parameter-overrides ManagementAccountId=${MGMT_ID}" ;;
+              accounts)            params="--parameter-overrides RootEmail=${ROOT_EMAIL}" ;;
+              iam)                 params="--parameter-overrides ManagementAccountId=${MGMT_ID}" ;;
+              log-archive-bucket)  params="--parameter-overrides OrganizationId=${ORG_ID} ManagementAccountId=${MGMT_ID}" ;;
             esac
             echo "::group::Deploying $stack"
             aws cloudformation deploy \

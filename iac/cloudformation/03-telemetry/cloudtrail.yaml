@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Organization CloudTrail in Management account.
+
+  Multi-region, includes global service events, log file validation
+  enabled. Lands in the cross-account log archive bucket via the bucket
+  policy provisioned by log-archive-bucket.yaml.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  AccountsStackName:
+    Type: String
+    Default: ai-sec-analyst-01-foundation-accounts
+
+Resources:
+  OrgTrail:
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      TrailName: !Sub '${ProjectName}-org-trail'
+      S3BucketName:
+        Fn::Sub:
+          - '${ProjectName}-cloudtrail-logs-${LogArchiveAccount}'
+          - LogArchiveAccount:
+              Fn::ImportValue: !Sub '${AccountsStackName}-LogArchiveAccountId'
+      IsOrganizationTrail: true
+      IsMultiRegionTrail: true
+      IsLogging: true
+      IncludeGlobalServiceEvents: true
+      EnableLogFileValidation: true
+      AdvancedEventSelectors:
+        - Name: Management events
+          FieldSelectors:
+            - Field: eventCategory
+              Equals:
+                - Management
+        - Name: S3 object events
+          FieldSelectors:
+            - Field: eventCategory
+              Equals:
+                - Data
+            - Field: resources.type
+              Equals:
+                - AWS::S3::Object
+      Tags:
+        - { Key: Project, Value: !Ref ProjectName }
+        - { Key: Layer, Value: 03-telemetry }
+        - { Key: ManagedBy, Value: cloudformation }
+
+Outputs:
+  TrailArn:
+    Value: !GetAtt OrgTrail.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TrailArn'
