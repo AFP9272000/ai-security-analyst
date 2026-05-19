@@ -1,22 +1,30 @@
 # GuardDuty (configured in Security Tooling as delegated admin)
 #
-# Detector enabled. Org-level configuration auto-enables GuardDuty in
-# every existing and future member account. Member accounts publish
-# findings to the delegated admin's detector for a single pane of glass.
+# Detector + org configuration only. Member account enrollment is handled
+# entirely by auto_enable_organization_members = "ALL" on the org config.
 #
-# NOTE v2: The detector was auto-created when foundation
-# registered Security Tooling as the GuardDuty delegated administrator.
-# We import that existing detector into state rather than creating a new
-# one. Replace <DETECTOR_ID> below with the value from:
-#   aws guardduty list-detectors --profile security-tooling --query 'DetectorIds[0]' --output text
-#
-# After a successful apply, the import block can be removed (state will
-# already reflect the resource).
+# REVISED v2: Removed explicit aws_guardduty_member resources.
+# With org auto-enable on, AWS manages member enrollment automatically;
+# the explicit resources conflicted with that auto-management and
+# triggered DisassociateMembers errors on apply. The `removed` blocks
+# below clean those resources out of state without disassociating them
+# in AWS, the org config continues to keep them enrolled.
 
-import {
-  to = aws_guardduty_detector.main
-  id = "7ecf1efa02fcfb7dfce5b85cde76f6b0"
+removed {
+  from = aws_guardduty_member.log_archive
+  lifecycle {
+    destroy = false
+  }
 }
+
+removed {
+  from = aws_guardduty_member.workload
+  lifecycle {
+    destroy = false
+  }
+}
+
+# Detector (already in state from import; no import block needed)
 
 resource "aws_guardduty_detector" "main" {
   provider = aws.security_tooling
@@ -65,34 +73,5 @@ resource "aws_guardduty_organization_configuration" "main" {
         }
       }
     }
-  }
-}
-
-# Explicit member resources cover log-archive and workload immediately
-# rather than waiting for the org-config reconciliation loop. Security
-# Tooling is the admin so it doesn't need a self-pointing member.
-resource "aws_guardduty_member" "log_archive" {
-  provider = aws.security_tooling
-
-  account_id  = local.log_archive_account_id
-  detector_id = aws_guardduty_detector.main.id
-  email       = "placeholder@example.com" # Required by API; ignored for org-managed members.
-  invite      = false
-
-  lifecycle {
-    ignore_changes = [email]
-  }
-}
-
-resource "aws_guardduty_member" "workload" {
-  provider = aws.security_tooling
-
-  account_id  = local.workload_account_id
-  detector_id = aws_guardduty_detector.main.id
-  email       = "placeholder@example.com"
-  invite      = false
-
-  lifecycle {
-    ignore_changes = [email]
   }
 }

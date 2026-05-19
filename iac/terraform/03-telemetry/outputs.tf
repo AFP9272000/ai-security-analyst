@@ -8,7 +8,7 @@ output "log_archive_bucket_arn" {
   value = aws_s3_bucket.log_archive.arn
 }
 
-# CloudTrail
+# CloudTrail 
 
 output "cloudtrail_arn" {
   value = aws_cloudtrail.org_trail.arn
@@ -18,7 +18,12 @@ output "cloudtrail_name" {
   value = aws_cloudtrail.org_trail.name
 }
 
-# GuardDuty 
+# GuardDuty (Part 1)
+#
+# Note: member account enrollment is auto-managed by org config, not
+# explicit aws_guardduty_member resources. Use the AWS CLI to list
+# current members at runtime:
+#   aws guardduty list-members --detector-id <DETECTOR_ID> --profile security-tooling
 
 output "guardduty_detector_id" {
   value = aws_guardduty_detector.main.id
@@ -26,13 +31,6 @@ output "guardduty_detector_id" {
 
 output "guardduty_admin_account_id" {
   value = local.security_tooling_id
-}
-
-output "guardduty_member_accounts" {
-  value = [
-    aws_guardduty_member.log_archive.account_id,
-    aws_guardduty_member.workload.account_id,
-  ]
 }
 
 # Security Hub 
@@ -48,7 +46,7 @@ output "securityhub_standards_subscribed" {
   ]
 }
 
-# EventBridge
+# EventBridge 
 
 output "security_findings_bus_name" {
   value = aws_cloudwatch_event_bus.security_findings.name

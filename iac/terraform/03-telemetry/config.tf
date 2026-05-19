@@ -1,16 +1,50 @@
 # AWS Config
 #
-# Two parts:
-# 1. Aggregator in Security Tooling (delegated admin), org-wide view of
-#    config + compliance across all member accounts.
-# 2. Per-account recorder + delivery channel deployed via CloudFormation
-#    StackSet from Management (using the SERVICE_MANAGED model wired up in
-#    foundation). Recorders ship logs to a central S3 bucket in the
-#    log-archive account.
+# Aggregator in security-tooling + per-account recorders that ship to a
+# central S3 bucket in log-archive.
 #
-# The recorder configuration is fan-out: same template into every
-# member-account, expressed as a CFN StackSet because that's the cleanest
-# AWS-native multi-account pattern.
+# REVISED v2: Drop explicit aws_iam_service_linked_role resources.
+# AWSServiceRoleForConfig is auto-created in every member account when
+# trusted access for config.amazonaws.com is enabled at the Org level
+# (which happens in 01-foundation/org.tf). Recorders reference the SLR by
+# its predictable ARN. `removed` blocks below clean up any SLR state that
+# may have been recorded on a previous failed apply.
+
+locals {
+  # Predictable ARN for the auto-created service-linked role.
+  config_slr_arn_template = "arn:aws:iam::%s:role/aws-service-role/config.amazonaws.com/AWSServiceRoleForConfig"
+}
+
+# Cleanup: remove any pre-existing SLR resources from state without deleting
+# them in AWS. Safe whether or not they were ever in state.
+
+removed {
+  from = aws_iam_service_linked_role.config_mgmt
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = aws_iam_service_linked_role.config_log_archive
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = aws_iam_service_linked_role.config_security_tooling
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = aws_iam_service_linked_role.config_workload
+  lifecycle {
+    destroy = false
+  }
+}
 
 # Config aggregator (in Security Tooling)
 
@@ -49,10 +83,6 @@ resource "aws_iam_role_policy_attachment" "config_aggregator" {
 }
 
 # Config delivery S3 bucket (in log-archive)
-#
-# Separate bucket from the CloudTrail one. Config and CloudTrail have
-# different file formats and lifecycle needs, and keeping them split
-# means Athena queries don't need to filter junk.
 
 resource "aws_s3_bucket" "config_logs" {
   provider = aws.log_archive
@@ -169,26 +199,12 @@ resource "aws_s3_bucket_policy" "config_logs" {
 
 # Per-account Config recorder + delivery channel
 #
-# Each member account (plus management) gets the same configuration:
-# - Service-linked role for Config
-# - Recorder enabled for all resource types
-# - Delivery channel writes to the shared bucket in log-archive
-#
-# Three resource pairs because TF doesn't loop providers.
+# Each account uses the predictable AWSServiceRoleForConfig SLR ARN.
 
 # Management
-resource "aws_iam_service_linked_role" "config_mgmt" {
-  aws_service_name = "config.amazonaws.com"
-  description      = "Service-linked role for AWS Config in Management"
-
-  lifecycle {
-    ignore_changes = [aws_service_name, description]
-  }
-}
-
 resource "aws_config_configuration_recorder" "mgmt" {
   name     = "${var.project}-recorder"
-  role_arn = aws_iam_service_linked_role.config_mgmt.arn
+  role_arn = format(local.config_slr_arn_template, local.mgmt_account_id)
 
   recording_group {
     all_supported                 = true
@@ -199,7 +215,6 @@ resource "aws_config_configuration_recorder" "mgmt" {
 resource "aws_config_delivery_channel" "mgmt" {
   name           = "${var.project}-delivery"
   s3_bucket_name = aws_s3_bucket.config_logs.id
-  s3_key_prefix  = ""
 
   snapshot_delivery_properties {
     delivery_frequency = "TwentyFour_Hours"
@@ -216,26 +231,15 @@ resource "aws_config_configuration_recorder_status" "mgmt" {
 }
 
 # log-archive
-resource "aws_iam_service_linked_role" "config_log_archive" {
-  provider = aws.log_archive
-
-  aws_service_name = "config.amazonaws.com"
-  description      = "Service-linked role for AWS Config in log-archive"
-
-  lifecycle {
-    ignore_changes = [aws_service_name, description]
-  }
-}
-
 resource "aws_config_configuration_recorder" "log_archive" {
   provider = aws.log_archive
 
   name     = "${var.project}-recorder"
-  role_arn = aws_iam_service_linked_role.config_log_archive.arn
+  role_arn = format(local.config_slr_arn_template, local.log_archive_account_id)
 
   recording_group {
     all_supported                 = true
-    include_global_resource_types = false # global types only need to be recorded in one account
+    include_global_resource_types = false
   }
 }
 
@@ -262,22 +266,11 @@ resource "aws_config_configuration_recorder_status" "log_archive" {
 }
 
 # security-tooling
-resource "aws_iam_service_linked_role" "config_security_tooling" {
-  provider = aws.security_tooling
-
-  aws_service_name = "config.amazonaws.com"
-  description      = "Service-linked role for AWS Config in security-tooling"
-
-  lifecycle {
-    ignore_changes = [aws_service_name, description]
-  }
-}
-
 resource "aws_config_configuration_recorder" "security_tooling" {
   provider = aws.security_tooling
 
   name     = "${var.project}-recorder"
-  role_arn = aws_iam_service_linked_role.config_security_tooling.arn
+  role_arn = format(local.config_slr_arn_template, local.security_tooling_id)
 
   recording_group {
     all_supported                 = true
@@ -308,22 +301,11 @@ resource "aws_config_configuration_recorder_status" "security_tooling" {
 }
 
 # workload
-resource "aws_iam_service_linked_role" "config_workload" {
-  provider = aws.workload
-
-  aws_service_name = "config.amazonaws.com"
-  description      = "Service-linked role for AWS Config in workload"
-
-  lifecycle {
-    ignore_changes = [aws_service_name, description]
-  }
-}
-
 resource "aws_config_configuration_recorder" "workload" {
   provider = aws.workload
 
   name     = "${var.project}-recorder"
-  role_arn = aws_iam_service_linked_role.config_workload.arn
+  role_arn = format(local.config_slr_arn_template, local.workload_account_id)
 
   recording_group {
     all_supported                 = true

@@ -2,12 +2,21 @@
 #
 # Custom bus for security findings + rules routing GuardDuty and
 # Security Hub events to a CloudWatch Log group as a placeholder target.
+#
+# swaps the CW Logs target for the enricher Lambda, with the
+# inference Lambda subscribed in parallel.
+#
+# REVISED v2: Dropped kms_key_identifier from the event bus.
+# The baseline KMS key policy doesn't grant events.amazonaws.com, and
+# rather than expanding that policy further, the bus uses AWS-managed
+# encryption (still SSE-KMS, just with an AWS-owned key). The log group
+# keeps the customer-managed baseline CMK because the log policy already
+# permits logs.amazonaws.com.
 
 resource "aws_cloudwatch_event_bus" "security_findings" {
   provider = aws.security_tooling
 
-  name           = "${var.project}-security-findings"
-  kms_key_identifier = local.baseline_key_arns["security-tooling"]
+  name = "${var.project}-security-findings"
 }
 
 # Placeholder target: CloudWatch Log group
@@ -50,12 +59,6 @@ resource "aws_cloudwatch_log_resource_policy" "findings" {
 }
 
 # Rules
-#
-# Note: GuardDuty findings ALSO publish to the default event bus by AWS
-# convention. We use a rule on the default bus to forward into our custom
-# bus, where downstream rules then dispatch. This pattern allows easy
-# attachment of additional sources (Security Hub, custom events) to the
-# same logical "security findings" stream.
 
 # Rule 1: GuardDuty findings on the default bus -> forward to custom bus
 resource "aws_cloudwatch_event_rule" "guardduty_to_custom" {
