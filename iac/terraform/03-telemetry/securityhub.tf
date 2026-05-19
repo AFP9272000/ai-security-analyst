@@ -1,25 +1,49 @@
-###############################################################################
 # Security Hub (configured in Security Tooling as delegated admin)
 #
-# Like GuardDuty, the Security Hub instance was auto-created when
-# foundation registered Security Tooling as the delegated admin. We
-# import the existing aws_securityhub_account resource. After a
-# successful apply, the import block can be removed.
+# REVISED v2:
+# - Removed explicit aws_securityhub_member resources. With
+#   auto_enable = true on the org configuration, AWS auto-manages member
+#   enrollment. The explicit resources conflicted and triggered
+#   DeleteMembers errors (which the SCP correctly blocks).
+# - Added 15-minute create timeout on standards subscriptions. AWS
+#   regularly takes 4-10 minutes to mark them READY, and the default
+#   3-minute Terraform wait is too short.
+#
+# The import block stays for first-time state landing of
+# aws_securityhub_account.main (which was auto-created by foundation's
+# delegated admin registration). Replace <ACCOUNT_ID> with the
+# Security Tooling account ID. After a successful apply, the import
+# block can be removed.
+
+
+removed {
+  from = aws_securityhub_member.log_archive
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = aws_securityhub_member.workload
+  lifecycle {
+    destroy = false
+  }
+}
 
 import {
   to = aws_securityhub_account.main
-  id = "834251004218 (this account)"
+  id = "834251004218"
 }
 
 resource "aws_securityhub_account" "main" {
   provider = aws.security_tooling
 
-  enable_default_standards = false # We subscribe to specific standards below for explicit control.
+  enable_default_standards  = false
   control_finding_generator = "SECURITY_CONTROL"
-  auto_enable_controls = true
+  auto_enable_controls      = true
 }
 
-# Org configuration: auto-enroll members
+# Org configuration auto-enroll members
 
 resource "aws_securityhub_organization_configuration" "main" {
   provider = aws.security_tooling
@@ -30,10 +54,6 @@ resource "aws_securityhub_organization_configuration" "main" {
 }
 
 # Standards subscriptions
-#
-# AWS Foundational Security Best Practices: the broadest default standard,
-# covers IAM/EC2/S3/etc. CIS 2.0 is the second most popular for
-# enterprise security baselines. PCI/HIPAA omitted, not applicable here.
 
 data "aws_region" "current" {
   provider = aws.security_tooling
@@ -45,6 +65,10 @@ resource "aws_securityhub_standards_subscription" "afsbp" {
   standards_arn = "arn:aws:securityhub:${data.aws_region.current.name}::standards/aws-foundational-security-best-practices/v/1.0.0"
 
   depends_on = [aws_securityhub_account.main]
+
+  timeouts {
+    create = "15m"
+  }
 }
 
 resource "aws_securityhub_standards_subscription" "cis" {
@@ -53,34 +77,8 @@ resource "aws_securityhub_standards_subscription" "cis" {
   standards_arn = "arn:aws:securityhub:::ruleset/cis-aws-foundations-benchmark/v/1.2.0"
 
   depends_on = [aws_securityhub_account.main]
-}
 
-# Member account enrollment
-
-resource "aws_securityhub_member" "log_archive" {
-  provider = aws.security_tooling
-
-  account_id = local.log_archive_account_id
-  email      = "placeholder@example.com" # Required by API; ignored for org-managed members.
-  invite     = false
-
-  depends_on = [aws_securityhub_account.main]
-
-  lifecycle {
-    ignore_changes = [email]
-  }
-}
-
-resource "aws_securityhub_member" "workload" {
-  provider = aws.security_tooling
-
-  account_id = local.workload_account_id
-  email      = "placeholder@example.com"
-  invite     = false
-
-  depends_on = [aws_securityhub_account.main]
-
-  lifecycle {
-    ignore_changes = [email]
+  timeouts {
+    create = "15m"
   }
 }
