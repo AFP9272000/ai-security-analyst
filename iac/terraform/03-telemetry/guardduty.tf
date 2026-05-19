@@ -15,7 +15,7 @@
 
 import {
   to = aws_guardduty_detector.main
-  id = "<DETECTOR_ID>"
+  id = "7ecf1efa02fcfb7dfce5b85cde76f6b0"
 }
 
 resource "aws_guardduty_detector" "main" {
