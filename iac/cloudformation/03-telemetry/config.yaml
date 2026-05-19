@@ -1,0 +1,152 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  AWS Config aggregator + per-account recorders.
+
+  Two StackSets:
+  - Aggregator: deployed to Security Tooling only
+  - Recorders + delivery channels: deployed to every member account
+
+  S3 destination bucket is referenced by name via parameter.
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - E1019
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  AccountsStackName:
+    Type: String
+    Default: ai-sec-analyst-01-foundation-accounts
+
+  ConfigBucketName:
+    Type: String
+    Description: Name of the S3 bucket in log-archive that receives Config snapshots
+
+Resources:
+
+  # Aggregator (Security Tooling only)
+
+  AggregatorStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Sub '${ProjectName}-config-aggregator'
+      Description: Org-wide Config aggregator in delegated admin
+      PermissionModel: SERVICE_MANAGED
+      AutoDeployment:
+        Enabled: false
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+      CallAs: SELF
+      StackInstancesGroup:
+        - DeploymentTargets:
+            Accounts:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityToolingAccountId'
+            AccountFilterType: INTERSECTION
+            OrganizationalUnitIds:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+          Regions:
+            - !Ref AWS::Region
+      TemplateBody:
+        Fn::Sub: |
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: Config aggregator
+          Resources:
+            AggregatorRole:
+              Type: AWS::IAM::Role
+              Properties:
+                RoleName: ${ProjectName}-config-aggregator
+                AssumeRolePolicyDocument:
+                  Version: '2012-10-17'
+                  Statement:
+                    - Effect: Allow
+                      Principal:
+                        Service: config.amazonaws.com
+                      Action: sts:AssumeRole
+                ManagedPolicyArns:
+                  - arn:aws:iam::aws:policy/service-role/AWSConfigRoleForOrganizations
+
+            Aggregator:
+              Type: AWS::Config::ConfigurationAggregator
+              Properties:
+                ConfigurationAggregatorName: ${ProjectName}-org-aggregator
+                OrganizationAggregationSource:
+                  AllAwsRegions: false
+                  AwsRegions:
+                    - !Sub $${AWS::Region}
+                  RoleArn: !GetAtt AggregatorRole.Arn
+
+          Outputs:
+            AggregatorArn:
+              Value: !GetAtt Aggregator.ConfigurationAggregatorArn
+
+  # Per-account recorders + delivery channels
+
+  RecorderStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Sub '${ProjectName}-config-recorders'
+      Description: Per-account Config recorder + delivery channel
+      PermissionModel: SERVICE_MANAGED
+      AutoDeployment:
+        Enabled: true
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+      CallAs: SELF
+      Parameters:
+        - ParameterKey: ConfigBucketName
+          ParameterValue: !Ref ConfigBucketName
+      StackInstancesGroup:
+        - DeploymentTargets:
+            OrganizationalUnitIds:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+              - Fn::ImportValue: !Sub '${AccountsStackName}-WorkloadOUId'
+          Regions:
+            - !Ref AWS::Region
+      TemplateBody:
+        Fn::Sub: |
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: Per-account Config recorder + delivery channel
+
+          Parameters:
+            ConfigBucketName:
+              Type: String
+
+          Resources:
+            ServiceLinkedRole:
+              Type: AWS::IAM::ServiceLinkedRole
+              DeletionPolicy: Retain
+              Properties:
+                AWSServiceName: config.amazonaws.com
+                Description: Service-linked role for AWS Config
+
+            Recorder:
+              Type: AWS::Config::ConfigurationRecorder
+              DependsOn: ServiceLinkedRole
+              Properties:
+                Name: ${ProjectName}-recorder
+                RoleARN: !Sub arn:aws:iam::$${AWS::AccountId}:role/aws-service-role/config.amazonaws.com/AWSServiceRoleForConfig
+                RecordingGroup:
+                  AllSupported: true
+                  IncludeGlobalResourceTypes: false
+
+            DeliveryChannel:
+              Type: AWS::Config::DeliveryChannel
+              DependsOn: Recorder
+              Properties:
+                Name: ${ProjectName}-delivery
+                S3BucketName: !Ref ConfigBucketName
+                ConfigSnapshotDeliveryProperties:
+                  DeliveryFrequency: TwentyFour_Hours
+
+Outputs:
+  AggregatorStackSetId:
+    Value: !Ref AggregatorStackSet
+  RecorderStackSetId:
+    Value: !Ref RecorderStackSet

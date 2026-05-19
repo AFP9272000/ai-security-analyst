@@ -1,0 +1,133 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  EventBridge custom bus + base rules in Security Tooling.
+
+  CFN parity for the Terraform layer. Targets are placeholder CW Logs;
+  Phase 4 swaps them for Lambda.
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - E1019
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  AccountsStackName:
+    Type: String
+    Default: ai-sec-analyst-01-foundation-accounts
+
+Resources:
+  EventBridgeStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Sub '${ProjectName}-eventbridge'
+      Description: Security findings event bus + base rules
+      PermissionModel: SERVICE_MANAGED
+      AutoDeployment:
+        Enabled: false
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+      CallAs: SELF
+      StackInstancesGroup:
+        - DeploymentTargets:
+            Accounts:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityToolingAccountId'
+            AccountFilterType: INTERSECTION
+            OrganizationalUnitIds:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+          Regions:
+            - !Ref AWS::Region
+      TemplateBody:
+        Fn::Sub: |
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: Custom security findings bus + base rules
+
+          Resources:
+            FindingsBus:
+              Type: AWS::Events::EventBus
+              Properties:
+                Name: ${ProjectName}-security-findings
+                KmsKeyIdentifier: !Sub alias/${ProjectName}-baseline
+
+            FindingsPlaceholderLogGroup:
+              Type: AWS::Logs::LogGroup
+              Properties:
+                LogGroupName: /aws/events/${ProjectName}-security-findings
+                RetentionInDays: 30
+                KmsKeyId:
+                  Fn::ImportValue: !Sub $${AWS::StackName}-BaselineKmsKeyArn
+
+            ForwarderRole:
+              Type: AWS::IAM::Role
+              Properties:
+                RoleName: ${ProjectName}-eventbridge-forwarder
+                AssumeRolePolicyDocument:
+                  Version: '2012-10-17'
+                  Statement:
+                    - Effect: Allow
+                      Principal:
+                        Service: events.amazonaws.com
+                      Action: sts:AssumeRole
+                Policies:
+                  - PolicyName: put-events-to-custom-bus
+                    PolicyDocument:
+                      Version: '2012-10-17'
+                      Statement:
+                        - Effect: Allow
+                          Action: events:PutEvents
+                          Resource: !GetAtt FindingsBus.Arn
+
+            GuardDutyForwardRule:
+              Type: AWS::Events::Rule
+              Properties:
+                Name: ${ProjectName}-guardduty-forward
+                EventPattern:
+                  source:
+                    - aws.guardduty
+                  detail-type:
+                    - GuardDuty Finding
+                Targets:
+                  - Id: forward-to-custom-bus
+                    Arn: !GetAtt FindingsBus.Arn
+                    RoleArn: !GetAtt ForwarderRole.Arn
+
+            SecurityHubForwardRule:
+              Type: AWS::Events::Rule
+              Properties:
+                Name: ${ProjectName}-securityhub-forward
+                EventPattern:
+                  source:
+                    - aws.securityhub
+                  detail-type:
+                    - Security Hub Findings - Imported
+                Targets:
+                  - Id: forward-to-custom-bus
+                    Arn: !GetAtt FindingsBus.Arn
+                    RoleArn: !GetAtt ForwarderRole.Arn
+
+            CustomBusToLogsRule:
+              Type: AWS::Events::Rule
+              Properties:
+                Name: ${ProjectName}-findings-to-logs
+                EventBusName: !Ref FindingsBus
+                EventPattern:
+                  source:
+                    - prefix: ''
+                Targets:
+                  - Id: to-cwlogs
+                    Arn: !GetAtt FindingsPlaceholderLogGroup.Arn
+
+          Outputs:
+            BusArn:
+              Value: !GetAtt FindingsBus.Arn
+            BusName:
+              Value: !Ref FindingsBus
+
+Outputs:
+  StackSetId:
+    Value: !Ref EventBridgeStackSet

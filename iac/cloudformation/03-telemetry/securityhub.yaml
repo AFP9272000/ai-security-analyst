@@ -1,0 +1,80 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Security Hub in delegated admin (Security Tooling).
+
+  Same parity caveat as the rest: CFN templates exist for
+  parity demonstration; Terraform is the deployed source of truth.
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - E1019
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  AccountsStackName:
+    Type: String
+    Default: ai-sec-analyst-01-foundation-accounts
+
+Resources:
+  SecurityHubStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Sub '${ProjectName}-securityhub'
+      Description: Security Hub in delegated admin
+      PermissionModel: SERVICE_MANAGED
+      AutoDeployment:
+        Enabled: false
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+      CallAs: SELF
+      StackInstancesGroup:
+        - DeploymentTargets:
+            Accounts:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityToolingAccountId'
+            AccountFilterType: INTERSECTION
+            OrganizationalUnitIds:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+          Regions:
+            - !Ref AWS::Region
+      TemplateBody:
+        Fn::Sub: |
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: Security Hub account + standards
+          Resources:
+            Hub:
+              Type: AWS::SecurityHub::Hub
+              DeletionPolicy: Retain
+              Properties:
+                EnableDefaultStandards: false
+                ControlFindingGenerator: SECURITY_CONTROL
+                AutoEnableControls: true
+                Tags:
+                  Project: ${ProjectName}
+                  Layer: 03-telemetry
+                  ManagedBy: cloudformation
+
+            AfsbpSubscription:
+              Type: AWS::SecurityHub::Standard
+              DependsOn: Hub
+              Properties:
+                StandardsArn: !Sub arn:aws:securityhub:$${AWS::Region}::standards/aws-foundational-security-best-practices/v/1.0.0
+
+            CisSubscription:
+              Type: AWS::SecurityHub::Standard
+              DependsOn: Hub
+              Properties:
+                StandardsArn: arn:aws:securityhub:::ruleset/cis-aws-foundations-benchmark/v/1.2.0
+
+          Outputs:
+            HubArn:
+              Value: !Ref Hub
+
+Outputs:
+  StackSetId:
+    Value: !Ref SecurityHubStackSet

@@ -59,6 +59,14 @@ jobs:
           ORG_ID=$(aws organizations describe-organization --query Organization.Id --output text)
           echo "id=$ORG_ID" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve log-archive account ID for Config bucket name
+        id: log_archive
+        run: |
+          LOG_ARCHIVE_ID=$(aws organizations list-accounts \
+            --query "Accounts[?Name=='${PROJECT}-log-archive'].Id | [0]" \
+            --output text)
+          echo "id=$LOG_ARCHIVE_ID" >> "$GITHUB_OUTPUT"
+
       - name: Activate Org access for StackSets (idempotent)
         run: aws cloudformation activate-organizations-access || true
 
@@ -67,6 +75,7 @@ jobs:
         env:
           MGMT_ID: ${{ steps.mgmt.outputs.id }}
           ORG_ID: ${{ steps.org.outputs.id }}
+          LOG_ARCHIVE_ID: ${{ steps.log_archive.outputs.id }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -83,6 +92,7 @@ jobs:
               accounts)            params="--parameter-overrides RootEmail=${ROOT_EMAIL}" ;;
               iam)                 params="--parameter-overrides ManagementAccountId=${MGMT_ID}" ;;
               log-archive-bucket)  params="--parameter-overrides OrganizationId=${ORG_ID} ManagementAccountId=${MGMT_ID}" ;;
+              config)              params="--parameter-overrides ConfigBucketName=${PROJECT}-config-logs-${LOG_ARCHIVE_ID}" ;;
             esac
             echo "::group::Changeset for $stack"
             aws cloudformation deploy \
@@ -121,6 +131,14 @@ jobs:
           ORG_ID=$(aws organizations describe-organization --query Organization.Id --output text)
           echo "id=$ORG_ID" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve log-archive account ID
+        id: log_archive
+        run: |
+          LOG_ARCHIVE_ID=$(aws organizations list-accounts \
+            --query "Accounts[?Name=='${PROJECT}-log-archive'].Id | [0]" \
+            --output text)
+          echo "id=$LOG_ARCHIVE_ID" >> "$GITHUB_OUTPUT"
+
       - name: Activate Org access for StackSets (idempotent)
         run: aws cloudformation activate-organizations-access || true
 
@@ -129,6 +147,7 @@ jobs:
         env:
           MGMT_ID: ${{ steps.mgmt.outputs.id }}
           ORG_ID: ${{ steps.org.outputs.id }}
+          LOG_ARCHIVE_ID: ${{ steps.log_archive.outputs.id }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -141,6 +160,7 @@ jobs:
               accounts)            params="--parameter-overrides RootEmail=${ROOT_EMAIL}" ;;
               iam)                 params="--parameter-overrides ManagementAccountId=${MGMT_ID}" ;;
               log-archive-bucket)  params="--parameter-overrides OrganizationId=${ORG_ID} ManagementAccountId=${MGMT_ID}" ;;
+              config)              params="--parameter-overrides ConfigBucketName=${PROJECT}-config-logs-${LOG_ARCHIVE_ID}" ;;
             esac
             echo "::group::Deploying $stack"
             aws cloudformation deploy \
