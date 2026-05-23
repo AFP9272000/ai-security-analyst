@@ -83,10 +83,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "log_archive" {
 
 # Bucket policy
 #
-# REVISED v3: AWS pre-create validation writes a test object to BOTH
-# "AWSLogs/<MGMT_ID>/*" and "AWSLogs/<orgID>/*" paths. Org trails use the
-# orgID-prefixed path in production, but the validation step uses the
-# MGMT path. Policy must allow both.
+# v3: write from org CloudTrail to both MGMT and orgID paths.
+# v4: cross-account read grant for security-tooling so Athena
+# and Glue running there can analyze the CloudTrail data.
 
 data "aws_iam_policy_document" "log_archive_bucket" {
   statement {
@@ -130,6 +129,35 @@ data "aws_iam_policy_document" "log_archive_bucket" {
       variable = "aws:SourceAccount"
       values   = [local.mgmt_account_id]
     }
+  }
+
+  # Phase 4: cross-account read for security-tooling Athena/Glue
+  statement {
+    sid    = "AllowSecurityToolingAnalyticsRead"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${local.security_tooling_id}:root"]
+    }
+    actions = [
+      "s3:GetObject",
+      "s3:GetObjectVersion",
+    ]
+    resources = ["${aws_s3_bucket.log_archive.arn}/*"]
+  }
+
+  statement {
+    sid    = "AllowSecurityToolingAnalyticsList"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${local.security_tooling_id}:root"]
+    }
+    actions = [
+      "s3:ListBucket",
+      "s3:GetBucketLocation",
+    ]
+    resources = [aws_s3_bucket.log_archive.arn]
   }
 
   statement {

@@ -1,0 +1,135 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Glue catalog (database + CloudTrail table) in Security Tooling.
+
+  StackSet with SERVICE_MANAGED permission model, single-account target
+  (security-tooling). Partition projection used instead of crawler.
+
+  PARITY NOTE: Same catalog created by the Terraform path. Deploy only
+  one IaC path. Terraform is the deployed source of truth.
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - E1019
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  ProjectNameUnderscored:
+    Type: String
+    Default: ai_sec_analyst
+    Description: Project name with underscores for Glue database (Glue disallows hyphens)
+
+  AccountsStackName:
+    Type: String
+    Default: ai-sec-analyst-01-foundation-accounts
+
+  LogArchiveBucketName:
+    Type: String
+    Description: Name of the log-archive bucket containing org CloudTrail data
+
+  OrganizationId:
+    Type: String
+    AllowedPattern: '^o-[a-z0-9]{10,32}$'
+
+Resources:
+  GlueStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Sub '${ProjectName}-glue-catalog'
+      Description: Glue catalog over CloudTrail data
+      PermissionModel: SERVICE_MANAGED
+      AutoDeployment:
+        Enabled: false
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+      CallAs: SELF
+      StackInstancesGroup:
+        - DeploymentTargets:
+            Accounts:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityToolingAccountId'
+            AccountFilterType: INTERSECTION
+            OrganizationalUnitIds:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+          Regions:
+            - !Ref AWS::Region
+      TemplateBody:
+        Fn::Sub: |
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: Glue catalog + CloudTrail table
+
+          Resources:
+            Database:
+              Type: AWS::Glue::Database
+              Properties:
+                CatalogId: !Sub $${AWS::AccountId}
+                DatabaseInput:
+                  Name: ${ProjectNameUnderscored}_security
+                  Description: Security data lake (CloudTrail, GuardDuty findings, Security Hub findings)
+
+            CloudTrailTable:
+              Type: AWS::Glue::Table
+              DependsOn: Database
+              Properties:
+                CatalogId: !Sub $${AWS::AccountId}
+                DatabaseName: ${ProjectNameUnderscored}_security
+                TableInput:
+                  Name: cloudtrail
+                  Description: Org CloudTrail logs (partition projection)
+                  TableType: EXTERNAL_TABLE
+                  Parameters:
+                    EXTERNAL: "TRUE"
+                    classification: cloudtrail
+                    projection.enabled: "true"
+                    projection.account_id.type: injected
+                    projection.region.type: enum
+                    projection.region.values: us-east-1,us-east-2,us-west-1,us-west-2,eu-west-1
+                    projection.year.type: integer
+                    projection.year.range: "2024,2030"
+                    projection.month.type: integer
+                    projection.month.range: "1,12"
+                    projection.month.digits: "2"
+                    projection.day.type: integer
+                    projection.day.range: "1,31"
+                    projection.day.digits: "2"
+                    storage.location.template: !Sub s3://${LogArchiveBucketName}/AWSLogs/${OrganizationId}/$${!account_id}/CloudTrail/$${!region}/$${!year}/$${!month}/$${!day}/
+                  PartitionKeys:
+                    - { Name: account_id, Type: string }
+                    - { Name: region, Type: string }
+                    - { Name: year, Type: string }
+                    - { Name: month, Type: string }
+                    - { Name: day, Type: string }
+                  StorageDescriptor:
+                    Location: !Sub s3://${LogArchiveBucketName}/AWSLogs/${OrganizationId}/
+                    InputFormat: com.amazon.emr.cloudtrail.CloudTrailInputFormat
+                    OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                    Compressed: true
+                    SerdeInfo:
+                      SerializationLibrary: com.amazon.emr.hive.serde.CloudTrailSerde
+                    Columns:
+                      - { Name: eventversion, Type: string }
+                      - { Name: eventtime, Type: string }
+                      - { Name: eventsource, Type: string }
+                      - { Name: eventname, Type: string }
+                      - { Name: awsregion, Type: string }
+                      - { Name: sourceipaddress, Type: string }
+                      - { Name: useragent, Type: string }
+                      - { Name: errorcode, Type: string }
+                      - { Name: errormessage, Type: string }
+                      - { Name: requestid, Type: string }
+                      - { Name: eventid, Type: string }
+                      - { Name: eventtype, Type: string }
+                      - { Name: recipientaccountid, Type: string }
+
+          Outputs:
+            DatabaseName:
+              Value: ${ProjectNameUnderscored}_security
+
+Outputs:
+  StackSetId:
+    Value: !Ref GlueStackSet

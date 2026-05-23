@@ -1,23 +1,18 @@
 # KMS baseline
 #
-# One general-purpose CMK per member account. Key policy grants:
+# One general-purpose CMK per member account. Key policies grant:
 #   - Account root: kms:* (delegates further via IAM policies)
 #   - CloudWatch Logs service: encrypt/decrypt log groups in this account
 #   - CloudTrail service: encrypt/decrypt trails delivered to this account
-#
-# Layer-specific keys ship with their own layers using tighter policies.
+#   - (Phase 4 addition) security-tooling account: kms:Decrypt on the
+#     log-archive key for cross-account Athena/Glue read of CloudTrail
+#     objects encrypted with the log-archive baseline key.
 #
 # Rotation enabled (annual). Aliased alias/ai-sec-analyst-baseline.
 
 locals {
   baseline_key_alias = "alias/${var.project}-baseline"
-}
 
-# Reusable statement generators - keeps the per-account data sources DRY
-
-# CloudWatch Logs needs the service principal AND a condition scoping to
-# the account's log groups. The service principal is region-specific.
-locals {
   cw_logs_actions = [
     "kms:Encrypt*",
     "kms:Decrypt*",
@@ -31,9 +26,19 @@ locals {
     "kms:DescribeKey",
     "kms:Decrypt",
   ]
+
+  # Cross-account read actions for security-tooling consuming log-archive
+  # KMS-encrypted objects (Phase 4 cross-account analytics pattern).
+  cross_account_read_actions = [
+    "kms:Decrypt",
+    "kms:DescribeKey",
+  ]
 }
 
 # log-archive
+#
+# Cross-account decrypt granted to security-tooling so Athena and Glue
+# (running in security-tooling) can read KMS-encrypted CloudTrail objects.
 
 data "aws_iam_policy_document" "baseline_log_archive" {
   provider = aws.log_archive
@@ -79,6 +84,18 @@ data "aws_iam_policy_document" "baseline_log_archive" {
       variable = "aws:SourceAccount"
       values   = [aws_organizations_organization.this.master_account_id]
     }
+  }
+
+  # Phase 4 cross-account decrypt for analytics
+  statement {
+    sid    = "AllowSecurityToolingDecrypt"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${aws_organizations_account.members["security-tooling"].id}:root"]
+    }
+    actions   = local.cross_account_read_actions
+    resources = ["*"]
   }
 }
 

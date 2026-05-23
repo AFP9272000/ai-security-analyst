@@ -1,0 +1,164 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Athena workgroup + results bucket + enriched findings bucket
+  in Security Tooling.
+
+  Combines two related concerns into a single StackSet for deploy ordering
+  simplicity.
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - E1019
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  AccountsStackName:
+    Type: String
+    Default: ai-sec-analyst-01-foundation-accounts
+
+Resources:
+  AthenaAndStorageStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Sub '${ProjectName}-athena-and-storage'
+      Description: Athena workgroup, results bucket, enriched findings bucket
+      PermissionModel: SERVICE_MANAGED
+      AutoDeployment:
+        Enabled: false
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+      CallAs: SELF
+      StackInstancesGroup:
+        - DeploymentTargets:
+            Accounts:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityToolingAccountId'
+            AccountFilterType: INTERSECTION
+            OrganizationalUnitIds:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+          Regions:
+            - !Ref AWS::Region
+      TemplateBody:
+        Fn::Sub: |
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: Athena workgroup + results bucket + enriched findings bucket
+
+          Resources:
+            AthenaResultsBucket:
+              Type: AWS::S3::Bucket
+              DeletionPolicy: Retain
+              UpdateReplacePolicy: Retain
+              Properties:
+                BucketName: !Sub ${ProjectName}-athena-results-$${AWS::AccountId}
+                VersioningConfiguration:
+                  Status: Enabled
+                PublicAccessBlockConfiguration:
+                  BlockPublicAcls: true
+                  BlockPublicPolicy: true
+                  IgnorePublicAcls: true
+                  RestrictPublicBuckets: true
+                BucketEncryption:
+                  ServerSideEncryptionConfiguration:
+                    - ServerSideEncryptionByDefault:
+                        SSEAlgorithm: aws:kms
+                        KMSMasterKeyID: alias/${ProjectName}-baseline
+                      BucketKeyEnabled: true
+                LifecycleConfiguration:
+                  Rules:
+                    - Id: expire-query-results
+                      Status: Enabled
+                      ExpirationInDays: 7
+
+            AthenaResultsBucketPolicy:
+              Type: AWS::S3::BucketPolicy
+              Properties:
+                Bucket: !Ref AthenaResultsBucket
+                PolicyDocument:
+                  Version: '2012-10-17'
+                  Statement:
+                    - Sid: DenyInsecureTransport
+                      Effect: Deny
+                      Principal: '*'
+                      Action: s3:*
+                      Resource:
+                        - !GetAtt AthenaResultsBucket.Arn
+                        - !Sub $${AthenaResultsBucket.Arn}/*
+                      Condition:
+                        Bool:
+                          aws:SecureTransport: 'false'
+
+            EnrichedFindingsBucket:
+              Type: AWS::S3::Bucket
+              DeletionPolicy: Retain
+              UpdateReplacePolicy: Retain
+              Properties:
+                BucketName: !Sub ${ProjectName}-enriched-findings-$${AWS::AccountId}
+                VersioningConfiguration:
+                  Status: Enabled
+                PublicAccessBlockConfiguration:
+                  BlockPublicAcls: true
+                  BlockPublicPolicy: true
+                  IgnorePublicAcls: true
+                  RestrictPublicBuckets: true
+                BucketEncryption:
+                  ServerSideEncryptionConfiguration:
+                    - ServerSideEncryptionByDefault:
+                        SSEAlgorithm: aws:kms
+                        KMSMasterKeyID: alias/${ProjectName}-baseline
+                      BucketKeyEnabled: true
+                LifecycleConfiguration:
+                  Rules:
+                    - Id: transition-old-findings
+                      Status: Enabled
+                      Transitions:
+                        - StorageClass: GLACIER_IR
+                          TransitionInDays: 90
+
+            EnrichedFindingsBucketPolicy:
+              Type: AWS::S3::BucketPolicy
+              Properties:
+                Bucket: !Ref EnrichedFindingsBucket
+                PolicyDocument:
+                  Version: '2012-10-17'
+                  Statement:
+                    - Sid: DenyInsecureTransport
+                      Effect: Deny
+                      Principal: '*'
+                      Action: s3:*
+                      Resource:
+                        - !GetAtt EnrichedFindingsBucket.Arn
+                        - !Sub $${EnrichedFindingsBucket.Arn}/*
+                      Condition:
+                        Bool:
+                          aws:SecureTransport: 'false'
+
+            Workgroup:
+              Type: AWS::Athena::WorkGroup
+              Properties:
+                Name: ${ProjectName}-security
+                Description: Security analytics workgroup
+                State: ENABLED
+                WorkGroupConfiguration:
+                  EnforceWorkGroupConfiguration: true
+                  PublishCloudWatchMetricsEnabled: true
+                  BytesScannedCutoffPerQuery: 10737418240
+                  ResultConfiguration:
+                    OutputLocation: !Sub s3://$${AthenaResultsBucket}/query-results/
+                    EncryptionConfiguration:
+                      EncryptionOption: SSE_KMS
+                      KmsKey: !Sub alias/${ProjectName}-baseline
+
+          Outputs:
+            WorkgroupName:
+              Value: !Ref Workgroup
+            EnrichedFindingsBucket:
+              Value: !Ref EnrichedFindingsBucket
+
+Outputs:
+  StackSetId:
+    Value: !Ref AthenaAndStorageStackSet
