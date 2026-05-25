@@ -1,14 +1,9 @@
 # Glue catalog (in Security Tooling)
 #
-# Database + CloudTrail table with partition projection. No crawler:
-# CloudTrail's S3 layout is deterministic, so partitions are projected at
-# query time. See docs/adr/0009-partition-projection-vs-crawler.md.
-#
-# REVISED: complex struct columns (useridentity, tlsdetails)
-# changed to plain `string` to avoid HIVE_BAD_DATA SerDe errors on records
-# with unexpected nested nulls. Query them at runtime with
-# json_extract_scalar(), this is the AWS-recommended pattern for
-# CloudTrail-in-Athena and what their official examples now use.
+# Complex/nested columns (useridentity, tlsdetails, resources, etc.) are
+# declared as `string` and parsed at query time with json_extract_scalar()
+# - avoids HIVE_BAD_DATA errors from struct SerDe choking on missing
+# nested fields.
 #
 # Example query:
 #   SELECT eventtime, eventname,
@@ -34,22 +29,22 @@ resource "aws_glue_catalog_table" "cloudtrail" {
   table_type = "EXTERNAL_TABLE"
 
   parameters = {
-    "EXTERNAL"                       = "TRUE"
-    "classification"                 = "cloudtrail"
-    "projection.enabled"             = "true"
-    "projection.account_id.type"     = "enum"
-    "projection.account_id.values"   = "${local.mgmt_account_id},${local.log_archive_account_id},${local.security_tooling_id},${local.workload_account_id}"
-    "projection.region.type"         = "enum"
-    "projection.region.values"       = "us-east-1,us-east-2,us-west-1,us-west-2,eu-west-1"
-    "projection.year.type"           = "integer"
-    "projection.year.range"          = "2024,2030"
-    "projection.month.type"          = "integer"
-    "projection.month.range"         = "1,12"
-    "projection.month.digits"        = "2"
-    "projection.day.type"            = "integer"
-    "projection.day.range"           = "1,31"
-    "projection.day.digits"          = "2"
-    "storage.location.template"      = "s3://${local.log_archive_bucket_name}/AWSLogs/${local.org_id}/$${account_id}/CloudTrail/$${region}/$${year}/$${month}/$${day}/"
+    "EXTERNAL"                     = "TRUE"
+    "classification"               = "cloudtrail"
+    "projection.enabled"           = "true"
+    "projection.account_id.type"   = "enum"
+    "projection.account_id.values" = "${local.mgmt_account_id},${local.log_archive_account_id},${local.security_tooling_id},${local.workload_account_id}"
+    "projection.region.type"       = "enum"
+    "projection.region.values"     = "us-east-1,us-east-2,us-west-1,us-west-2,eu-west-1"
+    "projection.year.type"         = "integer"
+    "projection.year.range"        = "2024,2030"
+    "projection.month.type"        = "integer"
+    "projection.month.range"       = "1,12"
+    "projection.month.digits"      = "2"
+    "projection.day.type"          = "integer"
+    "projection.day.range"         = "1,31"
+    "projection.day.digits"        = "2"
+    "storage.location.template"    = "s3://${local.log_archive_bucket_name}/AWSLogs/${local.org_id}/$${account_id}/CloudTrail/$${region}/$${year}/$${month}/$${day}/"
   }
 
   partition_keys {
@@ -83,36 +78,113 @@ resource "aws_glue_catalog_table" "cloudtrail" {
       serialization_library = "com.amazon.emr.hive.serde.CloudTrailSerde"
     }
 
-    # Scalar columns: parsed directly by the SerDe
-    columns { name = "eventversion",        type = "string" }
-    columns { name = "eventtime",           type = "string" }
-    columns { name = "eventsource",         type = "string" }
-    columns { name = "eventname",           type = "string" }
-    columns { name = "awsregion",           type = "string" }
-    columns { name = "sourceipaddress",     type = "string" }
-    columns { name = "useragent",           type = "string" }
-    columns { name = "errorcode",           type = "string" }
-    columns { name = "errormessage",        type = "string" }
-    columns { name = "requestid",           type = "string" }
-    columns { name = "eventid",             type = "string" }
-    columns { name = "eventtype",           type = "string" }
-    columns { name = "apiversion",          type = "string" }
-    columns { name = "readonly",            type = "string" }
-    columns { name = "recipientaccountid",  type = "string" }
-    columns { name = "sharedeventid",       type = "string" }
-    columns { name = "vpcendpointid",       type = "string" }
-    columns { name = "managementevent",     type = "string" }
-    columns { name = "eventcategory",       type = "string" }
+    # Scalar columns
+    columns {
+      name = "eventversion"
+      type = "string"
+    }
+    columns {
+      name = "eventtime"
+      type = "string"
+    }
+    columns {
+      name = "eventsource"
+      type = "string"
+    }
+    columns {
+      name = "eventname"
+      type = "string"
+    }
+    columns {
+      name = "awsregion"
+      type = "string"
+    }
+    columns {
+      name = "sourceipaddress"
+      type = "string"
+    }
+    columns {
+      name = "useragent"
+      type = "string"
+    }
+    columns {
+      name = "errorcode"
+      type = "string"
+    }
+    columns {
+      name = "errormessage"
+      type = "string"
+    }
+    columns {
+      name = "requestid"
+      type = "string"
+    }
+    columns {
+      name = "eventid"
+      type = "string"
+    }
+    columns {
+      name = "eventtype"
+      type = "string"
+    }
+    columns {
+      name = "apiversion"
+      type = "string"
+    }
+    columns {
+      name = "readonly"
+      type = "string"
+    }
+    columns {
+      name = "recipientaccountid"
+      type = "string"
+    }
+    columns {
+      name = "sharedeventid"
+      type = "string"
+    }
+    columns {
+      name = "vpcendpointid"
+      type = "string"
+    }
+    columns {
+      name = "managementevent"
+      type = "string"
+    }
+    columns {
+      name = "eventcategory"
+      type = "string"
+    }
 
-    # Complex/nested columns: stored as JSON strings, parsed in queries
-    # with json_extract_scalar(). Avoids HIVE_BAD_DATA errors on records
-    # with missing nested fields.
-    columns { name = "useridentity",         type = "string" }
-    columns { name = "requestparameters",    type = "string" }
-    columns { name = "responseelements",     type = "string" }
-    columns { name = "additionaleventdata",  type = "string" }
-    columns { name = "resources",            type = "string" }
-    columns { name = "serviceeventdetails",  type = "string" }
-    columns { name = "tlsdetails",           type = "string" }
+    # Complex/nested columns - stored as JSON strings, queried with
+    # json_extract_scalar(). Avoids HIVE_BAD_DATA on missing nested fields.
+    columns {
+      name = "useridentity"
+      type = "string"
+    }
+    columns {
+      name = "requestparameters"
+      type = "string"
+    }
+    columns {
+      name = "responseelements"
+      type = "string"
+    }
+    columns {
+      name = "additionaleventdata"
+      type = "string"
+    }
+    columns {
+      name = "resources"
+      type = "string"
+    }
+    columns {
+      name = "serviceeventdetails"
+      type = "string"
+    }
+    columns {
+      name = "tlsdetails"
+      type = "string"
+    }
   }
 }
