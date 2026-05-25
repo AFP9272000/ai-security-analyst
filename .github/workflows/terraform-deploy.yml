@@ -71,10 +71,16 @@ jobs:
             terraform plan -out=tfplan -no-color | tee plan.txt
           fi
 
+      # Upload tfplan AND any built artifacts (.build/ holds Lambda zips
+      # produced by archive_file data sources). Multi-path syntax keeps
+      # the relative directory structure under iac/terraform/<layer>/.
       - uses: actions/upload-artifact@v4
         with:
           name: tfplan-${{ inputs.layer }}
-          path: iac/terraform/${{ inputs.layer }}/tfplan
+          path: |
+            iac/terraform/${{ inputs.layer }}/tfplan
+            iac/terraform/${{ inputs.layer }}/.build/**
+          if-no-files-found: ignore
           retention-days: 5
 
   apply:
