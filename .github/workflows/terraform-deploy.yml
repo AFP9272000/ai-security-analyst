@@ -71,15 +71,28 @@ jobs:
             terraform plan -out=tfplan -no-color | tee plan.txt
           fi
 
-      # Upload tfplan AND any built artifacts (.build/ holds Lambda zips
-      # produced by archive_file data sources). Multi-path syntax keeps
-      # the relative directory structure under iac/terraform/<layer>/.
+      - name: verify build artifacts present (if any)
+        working-directory: iac/terraform/${{ inputs.layer }}
+        run: |
+          if [ -d .build ]; then
+            echo "Build artifacts found:"
+            ls -la .build/
+          else
+            echo "No build artifacts (layer has no Lambdas)"
+          fi
+
+      # actions/upload-artifact@v4 EXCLUDES dotfiles by default. The
+      # .build/ directory holds Lambda zip artifacts produced by
+      # archive_file data sources; without include-hidden-files=true,
+      # the apply job downloads tfplan but not the zips, and Lambda
+      # resources fail with "no such file or directory".
       - uses: actions/upload-artifact@v4
         with:
           name: tfplan-${{ inputs.layer }}
           path: |
             iac/terraform/${{ inputs.layer }}/tfplan
             iac/terraform/${{ inputs.layer }}/.build/**
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 5
 
@@ -105,6 +118,16 @@ jobs:
         with:
           name: tfplan-${{ inputs.layer }}
           path: iac/terraform/${{ inputs.layer }}
+
+      - name: verify downloaded artifacts
+        working-directory: iac/terraform/${{ inputs.layer }}
+        run: |
+          echo "Contents of layer dir after artifact download:"
+          ls -la
+          if [ -d .build ]; then
+            echo "Contents of .build/:"
+            ls -la .build/
+          fi
 
       - name: terraform init
         working-directory: iac/terraform/${{ inputs.layer }}
