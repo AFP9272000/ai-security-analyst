@@ -1,0 +1,7 @@
+# Phase 4 Part 2 v1 has no runtime dependencies beyond what's in the
+# AWS Lambda Python 3.12 runtime (boto3, botocore).
+#
+# Future iterations adding cross-account assume-role or HTTP calls
+# may need additional packages. When that happens, build with:
+#   pip install -r requirements.txt -t .
+# and the archive_file resource in TF will pick them up.

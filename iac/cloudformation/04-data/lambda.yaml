@@ -1,0 +1,185 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Enricher Lambda in Security Tooling.
+
+  StackSet deploys the Lambda function, IAM role, log group, and
+  EventBridge subscription to the security-tooling account.
+
+  Lambda code itself is referenced as an S3 object - in this project's
+  Terraform-as-source-of-truth model, the code zip is built and uploaded
+  by TF. For a pure-CFN deploy, the CodeUri would point to a separately
+  uploaded artifact bucket. The CodeBucket/CodeKey parameters here
+  expect that artifact to already exist.
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - E1019
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  AccountsStackName:
+    Type: String
+    Default: ai-sec-analyst-01-foundation-accounts
+
+  EnrichedBucketName:
+    Type: String
+    Description: Name of the enriched-findings bucket the Lambda writes to
+
+  SecurityFindingsBusName:
+    Type: String
+    Default: ai-sec-analyst-security-findings
+    Description: Name of the custom EventBridge bus the Lambda subscribes to
+
+  CodeBucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment package
+
+  CodeKey:
+    Type: String
+    Default: lambdas/enricher.zip
+    Description: S3 key of the Lambda deployment package
+
+Resources:
+  EnricherStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Sub '${ProjectName}-enricher-lambda'
+      Description: Enricher Lambda function + EventBridge subscription
+      PermissionModel: SERVICE_MANAGED
+      AutoDeployment:
+        Enabled: false
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+      CallAs: SELF
+      Parameters:
+        - ParameterKey: EnrichedBucketName
+          ParameterValue: !Ref EnrichedBucketName
+        - ParameterKey: SecurityFindingsBusName
+          ParameterValue: !Ref SecurityFindingsBusName
+        - ParameterKey: CodeBucket
+          ParameterValue: !Ref CodeBucket
+        - ParameterKey: CodeKey
+          ParameterValue: !Ref CodeKey
+        - ParameterKey: ProjectName
+          ParameterValue: !Ref ProjectName
+      StackInstancesGroup:
+        - DeploymentTargets:
+            Accounts:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityToolingAccountId'
+            AccountFilterType: INTERSECTION
+            OrganizationalUnitIds:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+          Regions:
+            - !Ref AWS::Region
+      TemplateBody: |
+        AWSTemplateFormatVersion: '2010-09-09'
+        Description: Enricher Lambda + IAM + EventBridge subscription
+
+        Parameters:
+          ProjectName:           { Type: String }
+          EnrichedBucketName:    { Type: String }
+          SecurityFindingsBusName: { Type: String }
+          CodeBucket:            { Type: String }
+          CodeKey:               { Type: String }
+
+        Resources:
+          EnricherLogGroup:
+            Type: AWS::Logs::LogGroup
+            Properties:
+              LogGroupName: !Sub /aws/lambda/${ProjectName}-enricher
+              RetentionInDays: 30
+              KmsKeyId: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/${ProjectName}-baseline
+
+          EnricherRole:
+            Type: AWS::IAM::Role
+            Properties:
+              RoleName: !Sub ${ProjectName}-enricher
+              AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                  - Effect: Allow
+                    Principal: { Service: lambda.amazonaws.com }
+                    Action: sts:AssumeRole
+              Policies:
+                - PolicyName: enricher-runtime
+                  PolicyDocument:
+                    Version: '2012-10-17'
+                    Statement:
+                      - Effect: Allow
+                        Action:
+                          - logs:CreateLogGroup
+                          - logs:CreateLogStream
+                          - logs:PutLogEvents
+                        Resource:
+                          - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-enricher
+                          - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-enricher:*
+                      - Effect: Allow
+                        Action:
+                          - s3:PutObject
+                          - s3:PutObjectTagging
+                        Resource: !Sub arn:aws:s3:::${EnrichedBucketName}/enriched/*
+                      - Effect: Allow
+                        Action:
+                          - kms:GenerateDataKey
+                          - kms:Encrypt
+                          - kms:Decrypt
+                          - kms:DescribeKey
+                        Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/${ProjectName}-baseline
+
+          EnricherFunction:
+            Type: AWS::Lambda::Function
+            DependsOn:
+              - EnricherLogGroup
+            Properties:
+              FunctionName: !Sub ${ProjectName}-enricher
+              Description: Normalizes security findings and writes to S3
+              Role: !GetAtt EnricherRole.Arn
+              Runtime: python3.12
+              Handler: lambda_function.handler
+              Code:
+                S3Bucket: !Ref CodeBucket
+                S3Key: !Ref CodeKey
+              Timeout: 30
+              MemorySize: 256
+              Environment:
+                Variables:
+                  ENRICHED_BUCKET: !Ref EnrichedBucketName
+                  ENVIRONMENT: prod
+                  LOG_LEVEL: INFO
+
+          SubscriptionRule:
+            Type: AWS::Events::Rule
+            Properties:
+              Name: !Sub ${ProjectName}-enricher-subscription
+              EventBusName: !Ref SecurityFindingsBusName
+              EventPattern:
+                source:
+                  - prefix: ''
+              Targets:
+                - Id: enricher
+                  Arn: !GetAtt EnricherFunction.Arn
+                  RetryPolicy:
+                    MaximumEventAgeInSeconds: 3600
+                    MaximumRetryAttempts: 3
+
+          InvokePermission:
+            Type: AWS::Lambda::Permission
+            Properties:
+              FunctionName: !Ref EnricherFunction
+              Action: lambda:InvokeFunction
+              Principal: events.amazonaws.com
+              SourceArn: !GetAtt SubscriptionRule.Arn
+
+        Outputs:
+          EnricherArn:
+            Value: !GetAtt EnricherFunction.Arn
+
+Outputs:
+  StackSetId:
+    Value: !Ref EnricherStackSet
