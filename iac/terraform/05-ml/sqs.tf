@@ -1,11 +1,18 @@
 # SQS for inference Lambda trigger
 #
-# S3 event notifications -> SQS -> Lambda. Why not S3 -> Lambda direct?
-# - Visibility timeout handles slow endpoint responses gracefully
-# - DLQ captures poisoned events for offline inspection
-# - Partial batch failure semantics (batchItemFailures) prevents
-#   one bad event from invalidating the whole batch
-# - Decouples S3 throughput from Lambda concurrency limits
+# S3 event notifications -> SQS -> Lambda. See ADR-0012 for the trigger
+# architecture rationale.
+#
+# REVISED v2: Dropped customer-managed CMK encryption on
+# both queues. AWS-managed SSE-SQS instead. S3 service principal can't
+# publish to a queue encrypted with a CMK whose policy doesn't grant
+# s3.amazonaws.com and expanding the baseline KMS policy for every
+# new service principal that wants to write encrypted messages doesn't
+# scale. Same call we made for the EventBridge bus
+#
+# Messages on this queue contain only S3 event metadata (bucket, key,
+# event type) - no actual finding content. The findings themselves
+# remain encrypted at rest in S3 with the customer CMK.
 
 # Dead-letter queue (DLQ)
 
@@ -15,7 +22,7 @@ resource "aws_sqs_queue" "inference_dlq" {
   name                       = "${var.project}-inference-dlq"
   message_retention_seconds  = 1209600 # 14 days
   visibility_timeout_seconds = 60
-  kms_master_key_id          = local.baseline_key_arns["security-tooling"]
+  sqs_managed_sse_enabled    = true
 }
 
 # Primary queue
@@ -26,7 +33,7 @@ resource "aws_sqs_queue" "inference" {
   name                       = "${var.project}-inference-queue"
   message_retention_seconds  = 86400 # 1 day - inference should keep up
   visibility_timeout_seconds = var.inference_sqs_visibility_timeout
-  kms_master_key_id          = local.baseline_key_arns["security-tooling"]
+  sqs_managed_sse_enabled    = true
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.inference_dlq.arn
@@ -61,10 +68,6 @@ resource "aws_sqs_queue_policy" "inference" {
 }
 
 # S3 bucket notification on the enriched-findings bucket
-#
-# The enriched bucket lives in the same security-tooling account, so no
-# cross-account permissions are needed. Filtered to enriched/ prefix to
-# avoid notifications on our own scored/ writes.
 
 resource "aws_s3_bucket_notification" "enriched_to_inference_queue" {
   provider = aws.security_tooling
