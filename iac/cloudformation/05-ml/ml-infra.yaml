@@ -1,0 +1,192 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  ML infrastructure (ECR, S3, IAM, Model Registry) in
+  Security Tooling.
+
+  PARITY NOTE: Same resources created by the Terraform path. Deploy only
+  one IaC path. Terraform is the deployed source of truth.
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - E1019
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  AccountsStackName:
+    Type: String
+    Default: ai-sec-analyst-01-foundation-accounts
+
+  ModelPackageGroupName:
+    Type: String
+    Default: ai-sec-analyst-anomaly
+
+Resources:
+  MLStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Sub '${ProjectName}-ml-infra'
+      Description: ECR + S3 + IAM + Model Registry for the anomaly model
+      PermissionModel: SERVICE_MANAGED
+      AutoDeployment:
+        Enabled: false
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_NAMED_IAM
+      CallAs: SELF
+      Parameters:
+        - ParameterKey: ProjectName
+          ParameterValue: !Ref ProjectName
+        - ParameterKey: ModelPackageGroupName
+          ParameterValue: !Ref ModelPackageGroupName
+      StackInstancesGroup:
+        - DeploymentTargets:
+            Accounts:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityToolingAccountId'
+            AccountFilterType: INTERSECTION
+            OrganizationalUnitIds:
+              - Fn::ImportValue: !Sub '${AccountsStackName}-SecurityOUId'
+          Regions:
+            - !Ref AWS::Region
+      TemplateBody: |
+        AWSTemplateFormatVersion: '2010-09-09'
+        Description: ECR + S3 + IAM + Model Registry
+
+        Parameters:
+          ProjectName:           { Type: String }
+          ModelPackageGroupName: { Type: String }
+
+        Resources:
+          AnomalyEcr:
+            Type: AWS::ECR::Repository
+            DeletionPolicy: Retain
+            Properties:
+              RepositoryName: !Sub ${ProjectName}-anomaly-model
+              ImageScanningConfiguration:
+                ScanOnPush: true
+              EncryptionConfiguration:
+                EncryptionType: KMS
+                KmsKey: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/${ProjectName}-baseline
+              LifecyclePolicy:
+                LifecyclePolicyText: |
+                  {
+                    "rules": [{
+                      "rulePriority": 1,
+                      "selection": {
+                        "tagStatus": "any",
+                        "countType": "imageCountMoreThan",
+                        "countNumber": 10
+                      },
+                      "action": { "type": "expire" }
+                    }]
+                  }
+
+          TrainingDataBucket:
+            Type: AWS::S3::Bucket
+            DeletionPolicy: Retain
+            UpdateReplacePolicy: Retain
+            Properties:
+              BucketName: !Sub ${ProjectName}-training-data-${AWS::AccountId}
+              VersioningConfiguration:
+                Status: Enabled
+              PublicAccessBlockConfiguration:
+                BlockPublicAcls: true
+                BlockPublicPolicy: true
+                IgnorePublicAcls: true
+                RestrictPublicBuckets: true
+              BucketEncryption:
+                ServerSideEncryptionConfiguration:
+                  - ServerSideEncryptionByDefault:
+                      SSEAlgorithm: aws:kms
+                      KMSMasterKeyID: !Sub alias/${ProjectName}-baseline
+                    BucketKeyEnabled: true
+
+          ModelArtifactsBucket:
+            Type: AWS::S3::Bucket
+            DeletionPolicy: Retain
+            UpdateReplacePolicy: Retain
+            Properties:
+              BucketName: !Sub ${ProjectName}-model-artifacts-${AWS::AccountId}
+              VersioningConfiguration:
+                Status: Enabled
+              PublicAccessBlockConfiguration:
+                BlockPublicAcls: true
+                BlockPublicPolicy: true
+                IgnorePublicAcls: true
+                RestrictPublicBuckets: true
+              BucketEncryption:
+                ServerSideEncryptionConfiguration:
+                  - ServerSideEncryptionByDefault:
+                      SSEAlgorithm: aws:kms
+                      KMSMasterKeyID: !Sub alias/${ProjectName}-baseline
+                    BucketKeyEnabled: true
+
+          SageMakerExecutionRole:
+            Type: AWS::IAM::Role
+            Properties:
+              RoleName: !Sub ${ProjectName}-sagemaker-execution
+              AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                  - Effect: Allow
+                    Principal: { Service: sagemaker.amazonaws.com }
+                    Action: sts:AssumeRole
+              Policies:
+                - PolicyName: sagemaker-execution
+                  PolicyDocument:
+                    Version: '2012-10-17'
+                    Statement:
+                      - Effect: Allow
+                        Action:
+                          - s3:GetObject
+                          - s3:PutObject
+                          - s3:DeleteObject
+                          - s3:ListBucket
+                        Resource:
+                          - !GetAtt TrainingDataBucket.Arn
+                          - !Sub ${TrainingDataBucket.Arn}/*
+                          - !GetAtt ModelArtifactsBucket.Arn
+                          - !Sub ${ModelArtifactsBucket.Arn}/*
+                      - Effect: Allow
+                        Action:
+                          - ecr:BatchGetImage
+                          - ecr:GetDownloadUrlForLayer
+                          - ecr:GetAuthorizationToken
+                          - ecr:BatchCheckLayerAvailability
+                        Resource: "*"
+                      - Effect: Allow
+                        Action:
+                          - kms:GenerateDataKey
+                          - kms:Encrypt
+                          - kms:Decrypt
+                          - kms:DescribeKey
+                          - kms:CreateGrant
+                        Resource: !Sub arn:aws:kms:${AWS::Region}:${AWS::AccountId}:alias/${ProjectName}-baseline
+                      - Effect: Allow
+                        Action:
+                          - logs:CreateLogGroup
+                          - logs:CreateLogStream
+                          - logs:PutLogEvents
+                          - logs:DescribeLogStreams
+                        Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/sagemaker/*
+
+          AnomalyModelPackageGroup:
+            Type: AWS::SageMaker::ModelPackageGroup
+            DeletionPolicy: Retain
+            Properties:
+              ModelPackageGroupName: !Ref ModelPackageGroupName
+              ModelPackageGroupDescription: CloudTrail anomaly detection model versions
+
+        Outputs:
+          EcrRepositoryUri:
+            Value: !GetAtt AnomalyEcr.RepositoryUri
+          SageMakerRoleArn:
+            Value: !GetAtt SageMakerExecutionRole.Arn
+
+Outputs:
+  StackSetId:
+    Value: !Ref MLStackSet
