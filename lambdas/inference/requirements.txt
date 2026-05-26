@@ -1,0 +1,1 @@
+# boto3 is in the AWS Lambda Python 3.12 runtime, no extras needed.

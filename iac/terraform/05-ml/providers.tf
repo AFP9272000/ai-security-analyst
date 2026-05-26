@@ -2,7 +2,7 @@
 #
 # Default in Management (CI/CD role).
 # security_tooling alias: ECR, SageMaker, Model Registry, all S3 buckets,
-#   IAM roles, everything for ML lives here.
+#   IAM roles, inference Lambda, SQS.
 
 data "aws_caller_identity" "current" {}
 
@@ -12,6 +12,18 @@ data "terraform_remote_state" "foundation" {
   config = {
     bucket         = "${var.project}-tfstate-${data.aws_caller_identity.current.account_id}"
     key            = "01-foundation/terraform.tfstate"
+    region         = var.state_region
+    dynamodb_table = "${var.project}-tflocks"
+    encrypt        = true
+  }
+}
+
+data "terraform_remote_state" "network" {
+  backend = "s3"
+
+  config = {
+    bucket         = "${var.project}-tfstate-${data.aws_caller_identity.current.account_id}"
+    key            = "02-network/terraform.tfstate"
     region         = var.state_region
     dynamodb_table = "${var.project}-tflocks"
     encrypt        = true
@@ -43,8 +55,20 @@ locals {
   deploy_role_arns    = data.terraform_remote_state.foundation.outputs.deploy_role_arns
   baseline_key_arns   = data.terraform_remote_state.foundation.outputs.baseline_key_arns
 
-  enriched_findings_bucket = data.terraform_remote_state.data.outputs.enriched_findings_bucket_name
-  athena_workgroup_name    = data.terraform_remote_state.data.outputs.athena_workgroup_name
+  enriched_findings_bucket     = data.terraform_remote_state.data.outputs.enriched_findings_bucket_name
+  enriched_findings_bucket_arn = data.terraform_remote_state.data.outputs.enriched_findings_bucket_arn
+  athena_workgroup_name        = data.terraform_remote_state.data.outputs.athena_workgroup_name
+
+  # Network layer outputs, required when endpoint_enabled = true.
+  # When network is destroyed, these resolve to
+  # null/empty but TF doesn't error because the dependent resources are
+  # also gated.
+  security_tooling_vpc_subnets = try(
+    data.terraform_remote_state.network.outputs.security_tooling_private_subnet_ids, []
+  )
+  security_tooling_endpoint_sg = try(
+    data.terraform_remote_state.network.outputs.security_tooling_endpoint_sg_id, ""
+  )
 }
 
 provider "aws" {
