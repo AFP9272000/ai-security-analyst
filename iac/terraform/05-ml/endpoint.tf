@@ -44,7 +44,8 @@ resource "aws_sagemaker_endpoint_configuration" "anomaly" {
   count    = var.endpoint_enabled ? 1 : 0
   provider = aws.security_tooling
 
-  name = "${var.project}-anomaly-endpoint-config-${formatdate("YYYYMMDD-hhmm", timestamp())}"
+  name        = "${var.project}-anomaly-endpoint-config-${formatdate("YYYYMMDD-hhmm", timestamp())}"
+  kms_key_arn = local.baseline_key_arns["security-tooling"]
 
   production_variants {
     variant_name           = "primary"
@@ -58,7 +59,7 @@ resource "aws_sagemaker_endpoint_configuration" "anomaly" {
     enable_capture              = true
     initial_sampling_percentage = 100
     destination_s3_uri          = "s3://${aws_s3_bucket.model_artifacts.id}/data-capture/"
-    kms_key_arn                 = local.baseline_key_arns["security-tooling"]
+    kms_key_id                  = local.baseline_key_arns["security-tooling"]
 
     capture_options {
       capture_mode = "Input"
@@ -67,8 +68,6 @@ resource "aws_sagemaker_endpoint_configuration" "anomaly" {
       capture_mode = "Output"
     }
   }
-
-  kms_key_arn = local.baseline_key_arns["security-tooling"]
 
   lifecycle {
     create_before_destroy = true
