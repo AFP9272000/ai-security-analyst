@@ -2,36 +2,37 @@
 SageMaker Pipeline definition for the CloudTrail anomaly detection model.
 
 This script BUILDS the pipeline JSON. The pipeline itself is registered
-in AWS via Terraform (iac/terraform/05-ml/pipeline.tf) which calls this
-script's exported pipeline JSON.
+in AWS by scripts/run_pipeline.py.
 
 To regenerate the pipeline JSON locally:
-    python pipelines/sagemaker/anomaly_pipeline.py > pipelines/sagemaker/anomaly_pipeline.json
+    python pipelines/anomaly/anomaly_pipeline.py > pipelines/anomaly/anomaly_pipeline.json
 
 Pipeline steps:
-    1. Preprocess: ProcessingStep that extracts CloudTrail data from
-       Athena, writes train/val parquet to S3
+    1. Preprocess: ProcessingStep that splits raw data into train/val
     2. Train: TrainingStep using our custom container
-    3. Evaluate: ProcessingStep that scores the model against a held-out
-       validation set, writes metrics JSON
+    3. Evaluate: ProcessingStep that scores model on validation set,
+       writes evaluation.json
     4. Conditional Register: RegisterModel step that fires only if the
-       model's anomaly-rate metric falls within an acceptable range.
-       Created with ModelApprovalStatus="PendingManualApproval" - the
-       human gate before promotion.
+       anomaly-rate metric is acceptable. PendingManualApproval status -
+       the human gate before promotion.
 """
 from __future__ import annotations
 
 import json
-import os
 import sys
+from pathlib import Path
 
-# This script is meant to be runnable both inside SageMaker Studio and
-# locally. Import the SageMaker SDK lazily so the module can be imported
-# for inspection without the SDK installed.
+# Absolute path to this file's directory - used to locate preprocess.py
+# and evaluate.py regardless of the caller's current working directory.
+# The SageMaker SDK validates code= parameters against the cwd at
+# pipeline-build time, so relative paths break when run from elsewhere.
+_PIPELINE_DIR = Path(__file__).resolve().parent
+
+
 def build_pipeline_definition() -> dict:
     """Build the pipeline definition and return it as a dict."""
     try:
-        import sagemaker
+        import sagemaker  # noqa: F401
         from sagemaker.estimator import Estimator
         from sagemaker.inputs import TrainingInput
         from sagemaker.model_metrics import MetricsSource, ModelMetrics
@@ -53,11 +54,11 @@ def build_pipeline_definition() -> dict:
         from sagemaker.workflow.step_collections import RegisterModel
         from sagemaker.workflow.steps import ProcessingStep, TrainingStep
     except ImportError:
-        print("sagemaker SDK not installed; install with: pip install sagemaker",
+        print("sagemaker SDK not installed; install with: pip install 'sagemaker<3'",
               file=sys.stderr)
         raise
 
-    # Pipeline parameters; can be overridden at execution time
+    # Pipeline parameters - can be overridden at execution time
     project = ParameterString(name="ProjectName", default_value="ai-sec-analyst")
     instance_type = ParameterString(
         name="ProcessingInstanceType",
@@ -79,8 +80,6 @@ def build_pipeline_definition() -> dict:
     )
 
     # PREPROCESSING step
-    # The preprocessor's image_uri is the same as training - we reuse our
-    # custom container for both since both need pandas + pyarrow + sklearn
     preprocessor = ScriptProcessor(
         image_uri=image_uri,
         command=["python"],
@@ -110,7 +109,7 @@ def build_pipeline_definition() -> dict:
                 source="/opt/ml/processing/validation",
             ),
         ],
-        code="preprocess.py",
+        code=str(_PIPELINE_DIR / "preprocess.py"),
     )
 
     # TRAINING step
@@ -141,7 +140,7 @@ def build_pipeline_definition() -> dict:
         },
     )
 
-    # EVALUATION step; scores model on held-out validation set
+    # EVALUATION step
     evaluation_report = PropertyFile(
         name="EvaluationReport",
         output_name="evaluation",
@@ -171,11 +170,11 @@ def build_pipeline_definition() -> dict:
                 source="/opt/ml/processing/evaluation",
             ),
         ],
-        code="evaluate.py",
+        code=str(_PIPELINE_DIR / "evaluate.py"),
         property_files=[evaluation_report],
     )
 
-    # REGISTER step; PendingManualApproval gates promotion
+    # REGISTER step
     step_register = RegisterModel(
         name="RegisterModel",
         estimator=estimator,
@@ -196,8 +195,7 @@ def build_pipeline_definition() -> dict:
         ),
     )
 
-    # CONDITIONAL: only register if anomaly rate is sensible. Models that
-    # find anomalies in 30%+ of validation data are likely broken.
+    # CONDITIONAL register: only if anomaly rate is sensible
     condition = ConditionLessThanOrEqualTo(
         left=JsonGet(
             step_name=step_evaluate.name,
