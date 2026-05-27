@@ -27,7 +27,8 @@ from pathlib import Path
 import boto3
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "pipelines" / "sagemaker"))
+# Renamed from pipelines/sagemaker/ to avoid shadowing the SageMaker SDK
+sys.path.insert(0, str(REPO_ROOT / "pipelines" / "anomaly"))
 
 
 PROJECT = "ai-sec-analyst"
@@ -70,7 +71,6 @@ def register():
 
     sm = boto3.client("sagemaker", region_name=REGION)
 
-    # SageMaker requires upserting via create/update; check if it exists first
     try:
         sm.describe_pipeline(PipelineName=PIPELINE_NAME)
         print(f"Updating existing pipeline {PIPELINE_NAME}")
