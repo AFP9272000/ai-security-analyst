@@ -4,9 +4,6 @@ SageMaker Pipeline definition for the CloudTrail anomaly detection model.
 This script BUILDS the pipeline JSON. The pipeline itself is registered
 in AWS by scripts/run_pipeline.py.
 
-To regenerate the pipeline JSON locally:
-    python pipelines/anomaly/anomaly_pipeline.py > pipelines/anomaly/anomaly_pipeline.json
-
 Pipeline steps:
     1. Preprocess: ProcessingStep that splits raw data into train/val
     2. Train: TrainingStep using our custom container
@@ -15,18 +12,34 @@ Pipeline steps:
     4. Conditional Register: RegisterModel step that fires only if the
        anomaly-rate metric is acceptable. PendingManualApproval status -
        the human gate before promotion.
+
+Windows note:
+    SageMaker SDK parses `code=` params through urllib. On Windows,
+    absolute paths like C:\\... get interpreted as URLs with scheme "c"
+    and crash with "url scheme c is not recognized". Workaround: chdir
+    to this file's directory and pass bare filenames. See _chdir context
+    manager below.
 """
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import sys
 from pathlib import Path
 
-# Absolute path to this file's directory - used to locate preprocess.py
-# and evaluate.py regardless of the caller's current working directory.
-# The SageMaker SDK validates code= parameters against the cwd at
-# pipeline-build time, so relative paths break when run from elsewhere.
 _PIPELINE_DIR = Path(__file__).resolve().parent
+
+
+@contextlib.contextmanager
+def _chdir(target: Path):
+    """Temporarily change working directory, restore on exit."""
+    previous = os.getcwd()
+    os.chdir(target)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
 
 
 def build_pipeline_definition() -> dict:
@@ -58,7 +71,7 @@ def build_pipeline_definition() -> dict:
               file=sys.stderr)
         raise
 
-    # Pipeline parameters - can be overridden at execution time
+    # Pipeline parameters
     project = ParameterString(name="ProjectName", default_value="ai-sec-analyst")
     instance_type = ParameterString(
         name="ProcessingInstanceType",
@@ -79,7 +92,6 @@ def build_pipeline_definition() -> dict:
         default_value=0.05,
     )
 
-    # PREPROCESSING step
     preprocessor = ScriptProcessor(
         image_uri=image_uri,
         command=["python"],
@@ -89,6 +101,8 @@ def build_pipeline_definition() -> dict:
         base_job_name="ai-sec-analyst-preprocess",
     )
 
+    # Bare filenames: chdir to _PIPELINE_DIR below before pipeline.definition()
+    # is called so SageMaker SDK sees a relative path instead of C:\...
     step_preprocess = ProcessingStep(
         name="Preprocess",
         processor=preprocessor,
@@ -109,10 +123,9 @@ def build_pipeline_definition() -> dict:
                 source="/opt/ml/processing/validation",
             ),
         ],
-        code=str(_PIPELINE_DIR / "preprocess.py"),
+        code="preprocess.py",
     )
 
-    # TRAINING step
     estimator = Estimator(
         image_uri=image_uri,
         instance_type=train_instance_type,
@@ -140,7 +153,6 @@ def build_pipeline_definition() -> dict:
         },
     )
 
-    # EVALUATION step
     evaluation_report = PropertyFile(
         name="EvaluationReport",
         output_name="evaluation",
@@ -170,11 +182,10 @@ def build_pipeline_definition() -> dict:
                 source="/opt/ml/processing/evaluation",
             ),
         ],
-        code=str(_PIPELINE_DIR / "evaluate.py"),
+        code="evaluate.py",
         property_files=[evaluation_report],
     )
 
-    # REGISTER step
     step_register = RegisterModel(
         name="RegisterModel",
         estimator=estimator,
@@ -195,7 +206,6 @@ def build_pipeline_definition() -> dict:
         ),
     )
 
-    # CONDITIONAL register: only if anomaly rate is sensible
     condition = ConditionLessThanOrEqualTo(
         left=JsonGet(
             step_name=step_evaluate.name,
@@ -222,7 +232,11 @@ def build_pipeline_definition() -> dict:
         steps=[step_preprocess, step_train, step_evaluate, step_conditional_register],
     )
 
-    return json.loads(pipeline.definition())
+    # Build while in _PIPELINE_DIR so SageMaker SDK resolves preprocess.py
+    # and evaluate.py as relative filenames - avoids the Windows
+    # C:\ -> urllib-scheme-"c" parsing crash.
+    with _chdir(_PIPELINE_DIR):
+        return json.loads(pipeline.definition())
 
 
 if __name__ == "__main__":
