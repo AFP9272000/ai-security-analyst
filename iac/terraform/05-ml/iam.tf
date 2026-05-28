@@ -5,17 +5,10 @@
 #   - Model registry
 #   - Inference endpoints
 #
-# Permissions: scoped to the buckets and ECR repo this layer creates,
-# plus the SageMaker job-management + PassRole actions a pipeline needs
-# to launch its sub-jobs.
-#
 # NOTE ON SINGLE-ROLE PATTERN: the pipeline orchestration role and the
-# job execution role are the same role here (it passes itself to the
-# jobs it creates). A hardened production setup would separate these -
-# a thin orchestration role that can only PassRole a distinct, minimal
-# job role. Single-role is the common tutorial pattern and acceptable
-# for this portfolio account. Flagged for the end-of-project hardening
-# ADR pass.
+# job execution role are the same role (it passes itself to the jobs it
+# creates). A hardened setup would separate these. Flagged for the
+# end-of-project hardening ADR pass.
 
 data "aws_iam_policy_document" "sagemaker_assume" {
   statement {
@@ -37,9 +30,9 @@ resource "aws_iam_role" "sagemaker_execution" {
 }
 
 data "aws_iam_policy_document" "sagemaker_execution" {
-  # S3: read training data, write model artifacts
+  # S3: read training data, write model artifacts (project buckets)
   statement {
-    sid    = "S3DataAccess"
+    sid    = "S3ProjectBuckets"
     effect = "Allow"
     actions = [
       "s3:GetObject",
@@ -52,6 +45,28 @@ data "aws_iam_policy_document" "sagemaker_execution" {
       "${aws_s3_bucket.training_data.arn}/*",
       aws_s3_bucket.model_artifacts.arn,
       "${aws_s3_bucket.model_artifacts.arn}/*",
+    ]
+  }
+
+  # SageMaker default session bucket. The Python SDK uploads step code
+  # (preprocess.py, evaluate.py) and stages intermediate artifacts here
+  # by default - bucket name pattern: sagemaker-<region>-<account>. The
+  # execution role must read/write it for jobs to find their code. To
+  # keep everything in project buckets instead, you'd override the SDK
+  # Session default_bucket - deferred; granting access is the standard
+  # pattern. This bucket uses SSE-S3 (AES256), so no KMS grant needed.
+  statement {
+    sid    = "S3SageMakerDefaultBucket"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:ListBucket",
+    ]
+    resources = [
+      "arn:aws:s3:::sagemaker-${var.region}-${local.security_tooling_id}",
+      "arn:aws:s3:::sagemaker-${var.region}-${local.security_tooling_id}/*",
     ]
   }
 
@@ -68,7 +83,7 @@ data "aws_iam_policy_document" "sagemaker_execution" {
     resources = ["*"]
   }
 
-  # KMS: decrypt the training data and re-encrypt outputs
+  # KMS: decrypt project-bucket data and re-encrypt outputs (our CMK)
   statement {
     sid    = "KMSAccess"
     effect = "Allow"
@@ -82,7 +97,7 @@ data "aws_iam_policy_document" "sagemaker_execution" {
     resources = [local.baseline_key_arns["security-tooling"]]
   }
 
-  # CloudWatch Logs: write training logs
+  # CloudWatch Logs: write training/processing logs
   statement {
     sid    = "CloudWatchLogs"
     effect = "Allow"
@@ -97,7 +112,7 @@ data "aws_iam_policy_document" "sagemaker_execution" {
     ]
   }
 
-  # CloudWatch Metrics: training and endpoint metrics
+  # CloudWatch Metrics
   statement {
     sid    = "CloudWatchMetrics"
     effect = "Allow"
@@ -112,7 +127,7 @@ data "aws_iam_policy_document" "sagemaker_execution" {
     }
   }
 
-  # ECR private network access (for VPC-mode endpoints in Part 2)
+  # ECR private network access (VPC-mode endpoints in Part 2)
   statement {
     sid    = "VPCSupport"
     effect = "Allow"
@@ -130,10 +145,7 @@ data "aws_iam_policy_document" "sagemaker_execution" {
     resources = ["*"]
   }
 
-  # PassRole: the pipeline passes this role to the processing/training
-  # jobs it creates. The iam:PassedToService condition restricts the
-  # pass to SageMaker only - prevents this from being a general-purpose
-  # privilege-escalation grant.
+  # PassRole: pipeline passes this role to the jobs it creates.
   statement {
     sid    = "PassRoleToSageMakerJobs"
     effect = "Allow"
@@ -148,11 +160,7 @@ data "aws_iam_policy_document" "sagemaker_execution" {
     }
   }
 
-  # SageMaker job management: the pipeline launches and monitors
-  # processing jobs, training jobs, and registers model packages.
-  # Resources are "*" because most Create* actions reference a
-  # not-yet-created resource; scoping by name pattern is deferred to
-  # the hardening pass. This is a single-purpose account.
+  # SageMaker job management: launch/monitor jobs, register packages.
   statement {
     sid    = "SageMakerJobManagement"
     effect = "Allow"
