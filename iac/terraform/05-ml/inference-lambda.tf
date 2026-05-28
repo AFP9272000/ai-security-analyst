@@ -1,12 +1,22 @@
 # Inference Lambda
 #
-# In-VPC (security-tooling private subnets) so it can reach the SageMaker
-# endpoint via the sagemaker.runtime VPC interface endpoint. Hard
-# dependency on 02-network being deployed.
+# Triggered by SQS (S3 -> SQS -> Lambda) when the enricher writes an
+# enriched finding. Calls the SageMaker endpoint, writes scored findings.
 #
-# Deployment package built by archive_file in this layer (workflow
-# uploads .build/ alongside tfplan; see ADR-0012 for the Lambda outside-
-# VPC vs in-VPC rationale).
+# VPC config is GATED on endpoint_enabled (Phase 5 Part 2 v3 fix):
+#   - endpoint_enabled = true  -> Lambda runs in-VPC to reach the endpoint
+#   - endpoint_enabled = false -> Lambda runs outside VPC (no ENIs)
+#
+# Why: a VPC-attached Lambda provisions ENIs in the private subnets.
+# Those ENIs block 02-network teardown for up to 45 min (AWS lazy reaper).
+# When there's no endpoint to reach, there's no reason to be in-VPC, so
+# we drop the VPC config and avoid the teardown hang entirely. See
+# ADR-0012 (updated).
+#
+# Behavior when endpoint_enabled = false and a finding arrives: the
+# Lambda fires, calls invoke_endpoint, gets a clean "endpoint not found"
+# error (fail-fast), retries 3x, then the message lands in the DLQ.
+# No network timeout, no hang.
 
 data "archive_file" "inference" {
   type        = "zip"
@@ -42,7 +52,9 @@ resource "aws_iam_role" "inference" {
   description        = "Execution role for the inference Lambda"
 }
 
-# AWS-managed VPC execution permissions
+# AWS-managed VPC execution permissions. Attached unconditionally it's
+# harmless when the Lambda isn't in-VPC, and avoids a
+# attach/detach churn cycle every time endpoint_enabled flips.
 resource "aws_iam_role_policy_attachment" "inference_vpc" {
   provider = aws.security_tooling
 
@@ -51,7 +63,6 @@ resource "aws_iam_role_policy_attachment" "inference_vpc" {
 }
 
 data "aws_iam_policy_document" "inference_policy" {
-  # CloudWatch Logs
   statement {
     sid    = "CloudWatchLogs"
     effect = "Allow"
@@ -66,7 +77,6 @@ data "aws_iam_policy_document" "inference_policy" {
     ]
   }
 
-  # SQS consume from inference queue
   statement {
     sid    = "SQSConsume"
     effect = "Allow"
@@ -79,7 +89,6 @@ data "aws_iam_policy_document" "inference_policy" {
     resources = [aws_sqs_queue.inference.arn]
   }
 
-  # S3 read enriched findings + write scored findings (same bucket, different prefixes)
   statement {
     sid    = "S3ReadEnriched"
     effect = "Allow"
@@ -99,7 +108,6 @@ data "aws_iam_policy_document" "inference_policy" {
     resources = ["${local.enriched_findings_bucket_arn}/scored/*"]
   }
 
-  # KMS for both read and write
   statement {
     sid    = "KMSAccess"
     effect = "Allow"
@@ -112,15 +120,12 @@ data "aws_iam_policy_document" "inference_policy" {
     resources = [local.baseline_key_arns["security-tooling"]]
   }
 
-  # SageMaker endpoint invocation
   statement {
     sid    = "SageMakerInvoke"
     effect = "Allow"
     actions = [
       "sagemaker:InvokeEndpoint",
     ]
-    # Endpoint ARN is constructed even if endpoint_enabled = false; the
-    # Lambda just fails at runtime in that case.
     resources = [
       "arn:aws:sagemaker:${var.region}:${local.security_tooling_id}:endpoint/${var.project}-anomaly-endpoint",
     ]
@@ -169,10 +174,15 @@ resource "aws_lambda_function" "inference" {
     }
   }
 
-  # VPC config - required for reaching the SageMaker endpoint
-  vpc_config {
-    subnet_ids         = local.security_tooling_vpc_subnets
-    security_group_ids = [local.security_tooling_endpoint_sg]
+  # VPC config only when the endpoint exists. When endpoint_enabled =
+  # false, no vpc_config block is rendered -> Lambda runs outside VPC ->
+  # no ENIs -> Phase 2 can be torn down without a 45-min ENI hang.
+  dynamic "vpc_config" {
+    for_each = var.endpoint_enabled ? [1] : []
+    content {
+      subnet_ids         = local.security_tooling_vpc_subnets
+      security_group_ids = [local.security_tooling_endpoint_sg]
+    }
   }
 
   depends_on = [
