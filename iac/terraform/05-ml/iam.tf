@@ -3,7 +3,7 @@
 # Trusted by sagemaker.amazonaws.com. Used by:
 #   - Pipeline executions (preprocess, train, evaluate, register)
 #   - Model registry
-#   - Inference endpoints
+#   - Inference endpoints 
 #
 # NOTE ON SINGLE-ROLE PATTERN: the pipeline orchestration role and the
 # job execution role are the same role (it passes itself to the jobs it
@@ -48,13 +48,8 @@ data "aws_iam_policy_document" "sagemaker_execution" {
     ]
   }
 
-  # SageMaker default session bucket. The Python SDK uploads step code
-  # (preprocess.py, evaluate.py) and stages intermediate artifacts here
-  # by default - bucket name pattern: sagemaker-<region>-<account>. The
-  # execution role must read/write it for jobs to find their code. To
-  # keep everything in project buckets instead, you'd override the SDK
-  # Session default_bucket - deferred; granting access is the standard
-  # pattern. This bucket uses SSE-S3 (AES256), so no KMS grant needed.
+  # SageMaker default session bucket (sagemaker-<region>-<account>).
+  # SDK stages step code + intermediate artifacts here. SSE-S3, no KMS.
   statement {
     sid    = "S3SageMakerDefaultBucket"
     effect = "Allow"
@@ -160,9 +155,12 @@ data "aws_iam_policy_document" "sagemaker_execution" {
     }
   }
 
-  # SageMaker job management: launch/monitor jobs, register packages.
+  # SageMaker job + model-registry management. RegisterModel calls
+  # CreateModelPackageGroup (idempotently ensures the group exists)
+  # before CreateModelPackage, so both are required even though the
+  # group is also created by Terraform.
   statement {
-    sid    = "SageMakerJobManagement"
+    sid    = "SageMakerJobAndRegistryManagement"
     effect = "Allow"
     actions = [
       "sagemaker:CreateProcessingJob",
@@ -174,6 +172,8 @@ data "aws_iam_policy_document" "sagemaker_execution" {
       "sagemaker:CreateModel",
       "sagemaker:DescribeModel",
       "sagemaker:DeleteModel",
+      "sagemaker:CreateModelPackageGroup",
+      "sagemaker:DescribeModelPackageGroup",
       "sagemaker:CreateModelPackage",
       "sagemaker:DescribeModelPackage",
       "sagemaker:UpdateModelPackage",
