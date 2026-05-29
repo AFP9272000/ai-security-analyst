@@ -1,18 +1,23 @@
 # SageMaker-compatible scikit-learn container.
 #
-# Uses the official AWS sklearn base image which provides:
-#   - /opt/ml/ directory structure that SageMaker expects
-#   - the multi-model server that handles invocation requests
-#   - Python 3.10 + scikit-learn pre-installed
+# Base: sagemaker-distribution (CPU). Provides Python 3.10 + sklearn +
+# the /opt/ml directory conventions and model server.
 #
-#  Add training script and the inference handler on top.
+# IMPORTANT: this base image runs as a NON-root user (sagemaker-user)
+# by default. SageMaker pre-creates processing/training output dirs
+# (/opt/ml/processing/*, /opt/ml/model) owned by root, so a non-root
+# process gets PermissionError on write. We switch to USER root so the
+# container can write its outputs. SageMaker's own framework containers
+# run as root for the same reason.
 #
 # Build:
 #   docker build -t ai-sec-analyst-anomaly:latest .
-# Run training locally:
-#   docker run --rm -v $(pwd)/mock-data:/opt/ml ai-sec-analyst-anomaly:latest train
 
 FROM public.ecr.aws/sagemaker/sagemaker-distribution:1.10.1-cpu
+
+# Need root to install packages and to write SageMaker's root-owned
+# input/output mounts at job runtime.
+USER root
 
 # Install extra dependencies beyond the base image's sklearn stack
 COPY requirements.txt /tmp/requirements.txt
@@ -32,5 +37,6 @@ COPY inference.py /opt/ml/code/inference.py
 COPY feature_engineering.py /opt/ml/code/feature_engineering.py
 
 # Default to training mode; SageMaker overrides this with "serve" when
-# the container is invoked as an inference endpoint.
+# the container is invoked as an inference endpoint, and ScriptProcessor
+# overrides it entirely for the preprocess/evaluate steps.
 ENTRYPOINT ["python", "/opt/ml/code/train.py"]
