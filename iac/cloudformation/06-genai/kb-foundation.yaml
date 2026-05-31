@@ -1,0 +1,235 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Knowledge Base foundation (Aurora pgvector + Bedrock
+  KB) in Security Tooling.
+
+  PARITY NOTE: Terraform is the deployed source of truth. This template
+  reproduces the core resources (network, Aurora, KB service role, KB,
+  data source). The pgvector DDL provisioner is a documented PARITY GAP:
+  in Terraform it is an aws_lambda_invocation; the CloudFormation
+  equivalent is a CloudFormation custom resource backed by the same
+  Lambda. The Lambda code is identical; only the invocation mechanism
+  differs. The custom resource is sketched at the bottom but not wired,
+  to keep this template reviewable.
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - E1019
+        - W2001
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  EnrichedBucketArn:
+    Type: String
+    Description: ARN of the enriched-findings bucket (from 04-data)
+
+  BaselineKmsKeyArn:
+    Type: String
+    Description: Security-tooling baseline CMK ARN (from 01-foundation)
+
+  AuroraEngineVersion:
+    Type: String
+    Default: '16.6'
+
+  EmbeddingModelId:
+    Type: String
+    Default: amazon.titan-embed-text-v2:0
+
+  KbDatabaseName:
+    Type: String
+    Default: kb
+
+  KbQualifiedTable:
+    Type: String
+    Default: bedrock_kb.findings
+
+Resources:
+  # --- Persistent network -----------------------------------------------
+  KbVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.20.0.0/24
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Name, Value: !Sub '${ProjectName}-kb-vpc' }
+
+  KbSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref KbVpc
+      CidrBlock: 10.20.0.0/26
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - { Key: Name, Value: !Sub '${ProjectName}-kb-subnet-0' }
+
+  KbSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref KbVpc
+      CidrBlock: 10.20.0.64/26
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - { Key: Name, Value: !Sub '${ProjectName}-kb-subnet-1' }
+
+  KbDbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub '${ProjectName} KB Aurora subnets'
+      SubnetIds:
+        - !Ref KbSubnetA
+        - !Ref KbSubnetB
+
+  KbAuroraSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Aurora vector store - access via RDS Data API, no ingress
+      VpcId: !Ref KbVpc
+      SecurityGroupEgress:
+        - { IpProtocol: '-1', CidrIp: 0.0.0.0/0 }
+
+  # --- Aurora Serverless v2 (scale-to-zero) -----------------------------
+  KbCluster:
+    Type: AWS::RDS::DBCluster
+    DeletionPolicy: Delete
+    Properties:
+      Engine: aurora-postgresql
+      EngineVersion: !Ref AuroraEngineVersion
+      DatabaseName: !Ref KbDatabaseName
+      MasterUsername: kbadmin
+      ManageMasterUserPassword: true
+      MasterUserSecret:
+        KmsKeyId: !Ref BaselineKmsKeyArn
+      StorageEncrypted: true
+      KmsKeyId: !Ref BaselineKmsKeyArn
+      EnableHttpEndpoint: true
+      DBSubnetGroupName: !Ref KbDbSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref KbAuroraSg
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0
+        MaxCapacity: 4
+        SecondsUntilAutoPause: 3600
+
+  KbInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref KbCluster
+      DBInstanceClass: db.serverless
+      Engine: aurora-postgresql
+
+  # --- Knowledge Base service role --------------------------------------
+  KbRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-knowledge-base'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: bedrock.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: knowledge-base
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/${EmbeddingModelId}'
+              - Effect: Allow
+                Action: [s3:GetObject, s3:ListBucket]
+                Resource:
+                  - !Ref EnrichedBucketArn
+                  - !Sub '${EnrichedBucketArn}/*'
+              - Effect: Allow
+                Action: [rds-data:ExecuteStatement, rds-data:BatchExecuteStatement]
+                Resource: !GetAtt KbCluster.DBClusterArn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !GetAtt KbCluster.MasterUserSecret.SecretArn
+              - Effect: Allow
+                Action: [kms:Decrypt, kms:DescribeKey, kms:GenerateDataKey]
+                Resource: !Ref BaselineKmsKeyArn
+
+  # --- Knowledge Base + data source -------------------------------------
+  # NOTE: requires the vector table to already exist (provisioner custom
+  # resource, see parity note). DependsOn omitted here since the custom
+  # resource is not wired in this template.
+  SecurityKnowledgeBase:
+    Type: AWS::Bedrock::KnowledgeBase
+    Properties:
+      Name: !Sub '${ProjectName}-security-kb'
+      RoleArn: !GetAtt KbRole.Arn
+      KnowledgeBaseConfiguration:
+        Type: VECTOR
+        VectorKnowledgeBaseConfiguration:
+          EmbeddingModelArn: !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/${EmbeddingModelId}'
+      StorageConfiguration:
+        Type: RDS
+        RdsConfiguration:
+          ResourceArn: !GetAtt KbCluster.DBClusterArn
+          CredentialsSecretArn: !GetAtt KbCluster.MasterUserSecret.SecretArn
+          DatabaseName: !Ref KbDatabaseName
+          TableName: !Ref KbQualifiedTable
+          FieldMapping:
+            PrimaryKeyField: id
+            VectorField: embedding
+            TextField: chunk
+            MetadataField: metadata
+
+  # Bedrock S3 data sources accept a max of ONE inclusion prefix each,
+  # so enriched/ and scored/ each get their own data source.
+  EnrichedDataSource:
+    Type: AWS::Bedrock::DataSource
+    Properties:
+      Name: !Sub '${ProjectName}-enriched-findings'
+      KnowledgeBaseId: !Ref SecurityKnowledgeBase
+      DataSourceConfiguration:
+        Type: S3
+        S3Configuration:
+          BucketArn: !Ref EnrichedBucketArn
+          InclusionPrefixes:
+            - enriched/
+      VectorIngestionConfiguration:
+        ChunkingConfiguration:
+          ChunkingStrategy: FIXED_SIZE
+          FixedSizeChunkingConfiguration:
+            MaxTokens: 300
+            OverlapPercentage: 20
+
+  ScoredDataSource:
+    Type: AWS::Bedrock::DataSource
+    Properties:
+      Name: !Sub '${ProjectName}-scored-findings'
+      KnowledgeBaseId: !Ref SecurityKnowledgeBase
+      DataSourceConfiguration:
+        Type: S3
+        S3Configuration:
+          BucketArn: !Ref EnrichedBucketArn
+          InclusionPrefixes:
+            - scored/
+      VectorIngestionConfiguration:
+        ChunkingConfiguration:
+          ChunkingStrategy: FIXED_SIZE
+          FixedSizeChunkingConfiguration:
+            MaxTokens: 300
+            OverlapPercentage: 20
+
+Outputs:
+  KnowledgeBaseId:
+    Value: !Ref SecurityKnowledgeBase
+  AuroraClusterArn:
+    Value: !GetAtt KbCluster.DBClusterArn
+  EnrichedDataSourceId:
+    Value: !GetAtt EnrichedDataSource.DataSourceId
+  ScoredDataSourceId:
+    Value: !GetAtt ScoredDataSource.DataSourceId

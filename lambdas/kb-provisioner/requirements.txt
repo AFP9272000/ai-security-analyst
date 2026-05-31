@@ -1,0 +1,2 @@
+# boto3 is in the AWS Lambda Python 3.12 runtime no extra deps needed.
+# The provisioner uses only boto3's rds-data client.
