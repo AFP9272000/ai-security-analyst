@@ -3,7 +3,8 @@
 # Assumed by bedrock.amazonaws.com. The KB uses it to:
 #   - call the embedding model (Titan Text Embeddings V2)
 #   - read source findings from the enriched bucket (S3)
-#   - read/write vectors in Aurora via the Data API
+#   - VALIDATE + read/write the Aurora cluster (DescribeDBClusters at
+#     create time, then Data API for vectors)
 #   - decrypt the DB secret + KMS-encrypted S3 objects
 #
 # The trust policy is scoped with aws:SourceAccount and an ArnLike on the
@@ -69,6 +70,19 @@ data "aws_iam_policy_document" "knowledge_base" {
       variable = "aws:ResourceAccount"
       values   = [local.security_tooling_id]
     }
+  }
+
+  # Validate the Aurora cluster at KB-create time. Bedrock calls
+  # DescribeDBClusters to confirm the cluster exists, is available, and
+  # has the Data API (HTTP endpoint) enabled. This is the documented
+  # required permission for a Bedrock KB on Aurora.
+  statement {
+    sid    = "RDSDescribeCluster"
+    effect = "Allow"
+    actions = [
+      "rds:DescribeDBClusters",
+    ]
+    resources = [aws_rds_cluster.kb.arn]
   }
 
   # Read/write vectors via the Data API
