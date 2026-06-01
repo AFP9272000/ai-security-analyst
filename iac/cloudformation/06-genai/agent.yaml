@@ -1,0 +1,175 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Guardrail + Bedrock Agent + action groups in Security
+  Tooling.
+
+  PARITY NOTE: Terraform is the deployed source of truth. This template
+  reproduces the Guardrail, the agent service role, the Agent (with KB
+  association + action groups inline), and the alias. The two action-
+  group Lambda FUNCTIONS themselves (athena-tool, config-tool) and their
+  roles/log groups are a PARITY GAP here - in Terraform they are full
+  aws_lambda_function resources built from archive_file; the CFN
+  equivalent would reference pre-uploaded code artifacts in S3
+  (CodeBucket/CodeKey), the same pattern used by the Phase 4 enricher
+  CFN template. They are parameterized as existing Lambda ARNs below.
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - E1019
+        - W2001
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+
+  KnowledgeBaseId:
+    Type: String
+    Description: KB id from Part 1
+
+  KnowledgeBaseArn:
+    Type: String
+    Description: KB ARN from Part 1
+
+  BaselineKmsKeyArn:
+    Type: String
+
+  AgentFoundationModel:
+    Type: String
+    Default: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    Description: Inference profile id (us. prefix) for newer Claude models
+
+  AthenaToolLambdaArn:
+    Type: String
+    Description: ARN of the pre-deployed Athena tool Lambda
+
+  ConfigToolLambdaArn:
+    Type: String
+    Description: ARN of the pre-deployed Config tool Lambda
+
+Resources:
+  Guardrail:
+    Type: AWS::Bedrock::Guardrail
+    Properties:
+      Name: !Sub '${ProjectName}-analyst-guardrail'
+      Description: Security analyst guardrail - credential/PII redaction + prompt-injection defense
+      BlockedInputMessaging: "This request can't be processed. Rephrase as a security analysis question."
+      BlockedOutputsMessaging: "The response was withheld by the content guardrail."
+      KmsKeyArn: !Ref BaselineKmsKeyArn
+      ContentPolicyConfig:
+        FiltersConfig:
+          - { Type: PROMPT_ATTACK, InputStrength: HIGH, OutputStrength: NONE }
+          - { Type: VIOLENCE, InputStrength: LOW, OutputStrength: LOW }
+          - { Type: MISCONDUCT, InputStrength: LOW, OutputStrength: LOW }
+      TopicPolicyConfig:
+        TopicsConfig:
+          - Name: OffensiveExploitation
+            Type: DENY
+            Definition: Requests to generate functional exploit code, malware, or step-by-step instructions to actively carry out an attack, as opposed to analyzing or remediating findings.
+            Examples:
+              - Write a working exploit for this CVE so I can run it.
+              - Generate a script to brute-force these SSH credentials.
+      SensitiveInformationPolicyConfig:
+        PiiEntitiesConfig:
+          - { Type: AWS_ACCESS_KEY, Action: ANONYMIZE }
+          - { Type: AWS_SECRET_KEY, Action: ANONYMIZE }
+          - { Type: PASSWORD, Action: ANONYMIZE }
+          - { Type: EMAIL, Action: ANONYMIZE }
+          - { Type: PHONE, Action: ANONYMIZE }
+          - { Type: NAME, Action: ANONYMIZE }
+          - { Type: US_SOCIAL_SECURITY_NUMBER, Action: ANONYMIZE }
+          - { Type: CREDIT_DEBIT_CARD_NUMBER, Action: ANONYMIZE }
+
+  AgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-agent'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: bedrock.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: agent
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
+                Resource:
+                  - arn:aws:bedrock:*::foundation-model/anthropic.*
+                  - !Sub 'arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*'
+              - Effect: Allow
+                Action: bedrock:Retrieve
+                Resource: !Ref KnowledgeBaseArn
+              - Effect: Allow
+                Action: bedrock:ApplyGuardrail
+                Resource: !GetAtt Guardrail.GuardrailArn
+
+  Agent:
+    Type: AWS::Bedrock::Agent
+    Properties:
+      AgentName: !Sub '${ProjectName}-analyst'
+      AgentResourceRoleArn: !GetAtt AgentRole.Arn
+      FoundationModel: !Ref AgentFoundationModel
+      AutoPrepare: true
+      Instruction: >-
+        You are a cloud security analyst assistant for an AWS environment.
+        Ground claims about findings in the knowledge base or tool results;
+        cite finding IDs and resource ARNs. Prefer query_security_findings
+        for counts and filtered lists. Use get_resource_configuration for
+        live resource state. You analyze and remediate findings; you do not
+        produce functional exploit code or attack instructions.
+      GuardrailConfiguration:
+        GuardrailIdentifier: !GetAtt Guardrail.GuardrailId
+        GuardrailVersion: !GetAtt Guardrail.Version
+      KnowledgeBases:
+        - KnowledgeBaseId: !Ref KnowledgeBaseId
+          Description: Enriched and anomaly-scored security findings.
+          KnowledgeBaseState: ENABLED
+      ActionGroups:
+        - ActionGroupName: query-findings
+          Description: Structured queries against the findings lake.
+          ActionGroupExecutor:
+            Lambda: !Ref AthenaToolLambdaArn
+          FunctionSchema:
+            Functions:
+              - Name: query_security_findings
+                Description: Query scored findings with optional filters; ordered by anomaly score.
+                Parameters:
+                  severity: { Type: string, Required: false, Description: "low|medium|high|informational" }
+                  source: { Type: string, Required: false, Description: "guardduty|securityhub|custom" }
+                  days_back: { Type: integer, Required: false, Description: "last N days (default 7)" }
+                  only_anomalies: { Type: boolean, Required: false, Description: "only anomalous findings" }
+                  limit: { Type: integer, Required: false, Description: "max rows (default 25, max 100)" }
+        - ActionGroupName: resource-config
+          Description: Current AWS resource configuration via Config.
+          ActionGroupExecutor:
+            Lambda: !Ref ConfigToolLambdaArn
+          FunctionSchema:
+            Functions:
+              - Name: get_resource_configuration
+                Description: Get the current Config-recorded configuration of a resource by ID or ARN.
+                Parameters:
+                  resource_id: { Type: string, Required: true, Description: "resource ID or ARN" }
+
+  AgentAlias:
+    Type: AWS::Bedrock::AgentAlias
+    Properties:
+      AgentAliasName: live
+      AgentId: !GetAtt Agent.AgentId
+      Description: Live alias for the security analyst agent
+
+Outputs:
+  AgentId:
+    Value: !GetAtt Agent.AgentId
+  AgentAliasId:
+    Value: !GetAtt AgentAlias.AgentAliasId
+  GuardrailId:
+    Value: !GetAtt Guardrail.GuardrailId
