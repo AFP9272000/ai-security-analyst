@@ -7,9 +7,7 @@
 # alias must point at a version that already has them attached. We set
 # prepare_agent = true (the provider re-prepares when associations
 # change) and make the alias depend on both action groups + the KB
-# association so it snapshots a fully-wired agent. If the console ever
-# shows the agent needing prepare after an apply, re-run apply or click
-# "Prepare", see README.
+# association so it snapshots a fully-wired agent.
 
 # Agent service role
 data "aws_iam_policy_document" "agent_assume" {
@@ -44,8 +42,7 @@ data "aws_iam_policy_document" "agent" {
   # Invoke the foundation model. Cross-Region inference profiles route to
   # the FM in multiple Regions, so we allow InvokeModel on BOTH the
   # inference-profile resources (in-account) AND the anthropic foundation
-  # models (any Region). This is the documented requirement for using a
-  # cross-Region profile as an agent's model.
+  # models (any Region).
   statement {
     sid    = "InvokeFoundationModelViaProfile"
     effect = "Allow"
@@ -79,6 +76,23 @@ data "aws_iam_policy_document" "agent" {
     ]
     resources = [aws_bedrock_guardrail.analyst.guardrail_arn]
   }
+
+  # Decrypt the guardrail config. The guardrail is encrypted with the
+  # security-tooling baseline CMK (kms_key_arn on the guardrail resource).
+  # Applying a CMK-encrypted guardrail requires the caller's role to be
+  # able to decrypt the key; without this, Bedrock reports the generic
+  # "guardrail is invalid" error. The baseline key policy already allows
+  # account principals via account-root kms:*, so this IAM grant is the
+  # only missing piece.
+  statement {
+    sid    = "DecryptGuardrailKey"
+    effect = "Allow"
+    actions = [
+      "kms:Decrypt",
+      "kms:DescribeKey",
+    ]
+    resources = [local.security_tooling_kms_arn]
+  }
 }
 
 resource "aws_iam_role_policy" "agent" {
@@ -92,11 +106,11 @@ resource "aws_iam_role_policy" "agent" {
 resource "aws_bedrockagent_agent" "analyst" {
   provider = aws.security_tooling
 
-  agent_name              = "${var.project}-analyst"
-  agent_resource_role_arn = aws_iam_role.agent.arn
-  foundation_model        = var.agent_foundation_model
+  agent_name                  = "${var.project}-analyst"
+  agent_resource_role_arn     = aws_iam_role.agent.arn
+  foundation_model            = var.agent_foundation_model
   idle_session_ttl_in_seconds = var.agent_idle_session_ttl
-  prepare_agent           = true
+  prepare_agent               = true
 
   instruction = <<-EOT
     You are a cloud security analyst assistant for an AWS environment. You
@@ -133,7 +147,7 @@ resource "aws_bedrockagent_agent" "analyst" {
   }
 }
 
-# Knowledge base association 
+# Knowledge base association
 resource "aws_bedrockagent_agent_knowledge_base_association" "analyst" {
   provider = aws.security_tooling
 
@@ -151,7 +165,6 @@ resource "aws_bedrockagent_agent_alias" "live" {
   agent_id         = aws_bedrockagent_agent.analyst.agent_id
   description      = "Live alias for the security analyst agent"
 
-  # Snapshot a fully-wired agent: KB + both action groups attached first.
   depends_on = [
     aws_bedrockagent_agent_knowledge_base_association.analyst,
     aws_bedrockagent_agent_action_group.athena_tool,
