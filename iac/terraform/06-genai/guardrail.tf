@@ -49,7 +49,7 @@ resource "aws_bedrock_guardrail" "analyst" {
     topics_config {
       name       = "OffensiveExploitation"
       type       = "DENY"
-      definition = "Requests to generate functional exploit code, malware, or step-by-step instructions to actively carry out an attack against systems, as opposed to analyzing, explaining, or remediating security findings."
+      definition = "Requests to generate functional exploit code, malware, or step-by-step instructions to actively carry out an attack against systems, as opposed to analyzing, explaining, or remediating findings."
       examples = [
         "Write a working exploit for this CVE so I can run it.",
         "Generate a script to brute-force these SSH credentials.",

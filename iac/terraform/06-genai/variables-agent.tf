@@ -16,7 +16,7 @@ variable "agent_foundation_model" {
     different/newer one enabled.
   EOT
   type        = string
-  default     = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  default     = "us.anthropic.claude-opus-4-8"
 }
 
 variable "agent_idle_session_ttl" {
