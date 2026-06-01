@@ -50,6 +50,18 @@ resource "aws_organizations_policy" "deny_regions" {
         "trustedadvisor:*",
         "ce:*",
         "cur:*",
+
+        # Bedrock model INVOCATION is exempt from the region guardrail.
+        # Newer models (e.g. Claude Opus 4.8) are only available through
+        # cross-Region inference profiles (the "us." profiles), which
+        # load-balance the invocation across us-east-1/us-east-2/us-west-2.
+        # Without this exemption the request is denied on the us-west-2 leg.
+        # Only the stateless invoke actions are exempted - they create no
+        # regional resources. Creating Bedrock resources (knowledge bases,
+        # agents, guardrails) is NOT exempted and stays region-locked.
+        # See ADR-0015.
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream",
       ]
       Resource = "*"
       Condition = {
