@@ -1,0 +1,199 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  API front door (DynamoDB + Cognito + HTTP API +
+  orchestrator) in Security Tooling.
+
+  PARITY NOTE: Terraform is the deployed source of truth. This template
+  reproduces the DynamoDB table, Cognito user pool + client, HTTP API +
+  JWT authorizer + route + stage, and the orchestrator's IAM role and
+  Lambda permission. The orchestrator Lambda CODE is referenced from a
+  pre-uploaded S3 artifact (CodeBucket/CodeKey) rather than built inline,
+  the same parity pattern used by earlier layers. The agent id and alias
+  are passed as parameters (this template does not re-declare the agent).
+
+Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W3002
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+  BaselineKmsKeyArn:
+    Type: String
+  AgentId:
+    Type: String
+    Description: Bedrock agent id (from Part 2)
+  AgentAliasId:
+    Type: String
+    Default: TSTALIASID
+  CodeBucket:
+    Type: String
+    Description: S3 bucket holding the orchestrator deployment package
+  CodeKey:
+    Type: String
+    Default: orchestrator/orchestrator.zip
+
+Resources:
+  ConversationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-conversations'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: session_id, AttributeType: S }
+        - { AttributeName: timestamp, AttributeType: S }
+      KeySchema:
+        - { AttributeName: session_id, KeyType: HASH }
+        - { AttributeName: timestamp, KeyType: RANGE }
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref BaselineKmsKeyArn
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${ProjectName}-analysts'
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+      UserPoolAddOns:
+        AdvancedSecurityMode: AUDIT
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub '${ProjectName}-chat-client'
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+
+  OrchestratorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-orchestrator'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: orchestrator
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-orchestrator:*'
+              - Effect: Allow
+                Action: bedrock:InvokeAgent
+                Resource:
+                  - !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent/${AgentId}'
+                  - !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent-alias/${AgentId}/*'
+              - Effect: Allow
+                Action: [dynamodb:PutItem, dynamodb:Query, dynamodb:GetItem]
+                Resource: !GetAtt ConversationsTable.Arn
+              - Effect: Allow
+                Action: [kms:Decrypt, kms:GenerateDataKey, kms:DescribeKey]
+                Resource: !Ref BaselineKmsKeyArn
+
+  OrchestratorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-orchestrator'
+      Runtime: python3.12
+      Handler: lambda_function.handler
+      Role: !GetAtt OrchestratorRole.Arn
+      Timeout: 120
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Environment:
+        Variables:
+          AGENT_ID: !Ref AgentId
+          AGENT_ALIAS_ID: !Ref AgentAliasId
+          CONVERSATION_TABLE: !Ref ConversationsTable
+          HISTORY_TTL_DAYS: '30'
+          MAX_RESUME_RETRIES: '3'
+
+  ChatApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${ProjectName}-chat-api'
+      ProtocolType: HTTP
+
+  CognitoAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref ChatApi
+      AuthorizerType: JWT
+      IdentitySource: ['$request.header.Authorization']
+      Name: !Sub '${ProjectName}-cognito-jwt'
+      JwtConfiguration:
+        Audience: [!Ref UserPoolClient]
+        Issuer: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}'
+
+  OrchestratorIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ChatApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt OrchestratorFunction.Arn
+      PayloadFormatVersion: '2.0'
+      IntegrationMethod: POST
+
+  ChatRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ChatApi
+      RouteKey: 'POST /chat'
+      Target: !Sub 'integrations/${OrchestratorIntegration}'
+      AuthorizationType: JWT
+      AuthorizerId: !Ref CognitoAuthorizer
+
+  DefaultStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref ChatApi
+      StageName: $default
+      AutoDeploy: true
+
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref OrchestratorFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ChatApi}/*/*'
+
+Outputs:
+  ChatApiEndpoint:
+    Value: !GetAtt ChatApi.ApiEndpoint
+  CognitoUserPoolId:
+    Value: !Ref UserPool
+  CognitoAppClientId:
+    Value: !Ref UserPoolClient
+  ConversationTableName:
+    Value: !Ref ConversationsTable
