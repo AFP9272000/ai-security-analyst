@@ -15,7 +15,7 @@ on:
           - 04-data
           - 05-ml
           - 06-genai
-          - 07-workload
+          - 07-integration
       action:
         description: 'plan / apply / destroy'
         required: true

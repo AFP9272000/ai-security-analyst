@@ -1,0 +1,172 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Integration & Alerting (Security Tooling).
+
+  PARITY NOTE: Terraform is the deployed source of truth. This template
+  reproduces the SNS topic (AWS-managed key), the two EventBridge rules
+  (GuardDuty high severity + Security Hub HIGH/CRITICAL), the triage
+  Lambda's IAM role, and the EventBridge invoke permissions. The triage
+  Lambda CODE is referenced from a pre-uploaded S3 artifact
+  (CodeBucket/CodeKey), the same parity pattern as earlier layers. The
+  agent id is passed as a parameter (this template does not re-declare
+  the agent).
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+  BaselineKmsKeyArn:
+    Type: String
+    Description: Security-tooling baseline CMK (for the log group + SSM decrypt)
+  AgentId:
+    Type: String
+  AgentAliasId:
+    Type: String
+    Default: TSTALIASID
+  AlertEmail:
+    Type: String
+    Default: ''
+    Description: Email to subscribe (blank to skip)
+  EnableAgentTriage:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+  SlackWebhookParam:
+    Type: String
+    Default: ''
+  CodeBucket:
+    Type: String
+  CodeKey:
+    Type: String
+    Default: triage/triage.zip
+
+Conditions:
+  HasEmail: !Not [!Equals [!Ref AlertEmail, '']]
+
+Resources:
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-alerts'
+      DisplayName: AI Sec Analyst Alerts
+      KmsMasterKeyId: alias/aws/sns
+
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasEmail
+    Properties:
+      TopicArn: !Ref AlertsTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  TriageRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-triage'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: triage
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-triage:*'
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref AlertsTopic
+              - Effect: Allow
+                Action: bedrock:InvokeAgent
+                Resource: !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent-alias/${AgentId}/*'
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/*'
+              - Effect: Allow
+                Action: [kms:Decrypt, kms:GenerateDataKey, kms:DescribeKey]
+                Resource: !Ref BaselineKmsKeyArn
+
+  TriageLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProjectName}-triage'
+      RetentionInDays: 30
+      KmsKeyId: !Ref BaselineKmsKeyArn
+
+  TriageFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: TriageLogGroup
+    Properties:
+      FunctionName: !Sub '${ProjectName}-triage'
+      Runtime: python3.12
+      Handler: lambda_function.handler
+      Role: !GetAtt TriageRole.Arn
+      Timeout: 120
+      MemorySize: 256
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref AlertsTopic
+          AGENT_ID: !Ref AgentId
+          AGENT_ALIAS_ID: !Ref AgentAliasId
+          ENABLE_AGENT_TRIAGE: !Ref EnableAgentTriage
+          SLACK_WEBHOOK_PARAM: !Ref SlackWebhookParam
+          MAX_RESUME_RETRIES: '2'
+
+  GuardDutyHighRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}-guardduty-high-sev'
+      Description: High-severity GuardDuty findings to the triage Lambda
+      EventPattern:
+        source: [aws.guardduty]
+        detail-type: [GuardDuty Finding]
+        detail:
+          severity: [{ numeric: ['>=', 7] }]
+      Targets:
+        - Id: triage-lambda
+          Arn: !GetAtt TriageFunction.Arn
+
+  SecurityHubHighRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}-securityhub-high-sev'
+      Description: HIGH/CRITICAL Security Hub findings to the triage Lambda
+      EventPattern:
+        source: [aws.securityhub]
+        detail-type: [Security Hub Findings - Imported]
+        detail:
+          findings:
+            Severity:
+              Label: [HIGH, CRITICAL]
+      Targets:
+        - Id: triage-lambda
+          Arn: !GetAtt TriageFunction.Arn
+
+  GuardDutyInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TriageFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt GuardDutyHighRule.Arn
+
+  SecurityHubInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref TriageFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SecurityHubHighRule.Arn
+
+Outputs:
+  AlertTopicArn:
+    Value: !Ref AlertsTopic
+  TriageLambdaName:
+    Value: !Ref TriageFunction
