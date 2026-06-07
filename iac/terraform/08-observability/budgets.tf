@@ -1,10 +1,18 @@
 # Cost controls (Management / payer account, default provider)
 #
-# A monthly cost budget with threshold alerts, plus Cost Anomaly
-# Detection. Both notify by EMAIL directly rather than via SNS: routing
-# Budgets/CE through an SNS topic requires granting budgets.amazonaws.com
-# / costalerts.amazonaws.com publish rights in the topic policy (another
-# service-principal coupling). Email-direct keeps it simple.
+# A monthly cost budget with threshold alerts, plus optional Cost Anomaly
+# Detection. Both notify by EMAIL directly rather than via SNS (avoids a
+# topic-policy service-principal grant).
+#
+# Anomaly Detection note: AWS allows only ONE dimensional (SERVICE) spend
+# monitor per account, and AWS often auto-creates a default one. So the
+# monitor here is OPTIONAL:
+#   - create_cost_anomaly_monitor = false (default): don't create one.
+#     If cost_anomaly_monitor_arn is set, attach a subscription to that
+#     existing monitor; otherwise skip CE entirely (the budget is the
+#     Terraform-managed guardrail).
+#   - create_cost_anomaly_monitor = true: create a new monitor (only
+#     works in an account with no existing dimensional monitor).
 
 locals {
   budget_notifications = var.notification_email == "" ? [] : [
@@ -12,6 +20,11 @@ locals {
     { type = "ACTUAL", threshold = 100 },
     { type = "FORECASTED", threshold = 100 },
   ]
+
+  # Resolve which monitor (if any) the subscription should target.
+  effective_monitor_arn = var.create_cost_anomaly_monitor ? one(aws_ce_anomaly_monitor.service[*].arn) : (var.cost_anomaly_monitor_arn == "" ? null : var.cost_anomaly_monitor_arn)
+
+  create_anomaly_subscription = var.notification_email != "" && local.effective_monitor_arn != null
 }
 
 resource "aws_budgets_budget" "monthly" {
@@ -33,28 +46,30 @@ resource "aws_budgets_budget" "monthly" {
   }
 }
 
-# Cost Anomaly Detection: a service-dimension monitor that learns normal
-# spend and flags deviations. The subscription (email alert) is only
-# created when an email is provided.
+# Optional: create a new SERVICE-dimension monitor (only for accounts
+# that don't already have one).
 resource "aws_ce_anomaly_monitor" "service" {
+  count = var.create_cost_anomaly_monitor ? 1 : 0
+
   name              = "${var.project}-anomaly-monitor"
   monitor_type      = "DIMENSIONAL"
   monitor_dimension = "SERVICE"
 }
 
+# Subscription on the effective monitor (created or existing), when an
+# email is set and a monitor ARN is available.
 resource "aws_ce_anomaly_subscription" "this" {
-  count = var.notification_email == "" ? 0 : 1
+  count = local.create_anomaly_subscription ? 1 : 0
 
   name             = "${var.project}-anomaly-subscription"
   frequency        = "DAILY"
-  monitor_arn_list = [aws_ce_anomaly_monitor.service.arn]
+  monitor_arn_list = [local.effective_monitor_arn]
 
   subscriber {
     type    = "EMAIL"
     address = var.notification_email
   }
 
-  # Only alert when the anomaly's total dollar impact is meaningful.
   threshold_expression {
     dimension {
       key           = "ANOMALY_TOTAL_IMPACT_ABSOLUTE"
