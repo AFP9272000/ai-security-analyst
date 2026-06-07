@@ -1,0 +1,177 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: |
+  Observability & cost controls.
+
+  PARITY NOTE: Terraform is the deployed source of truth. This template
+  reproduces the CloudWatch dashboard, the critical-Lambda error alarms,
+  the chat API 5xx alarm, and the monthly cost budget. The alert SNS
+  topic ARN and chat API id are passed as parameters (Terraform derives
+  them from remote state). Cost Anomaly Detection is managed in Terraform
+  only (the AWS::CE::* resource coverage in CloudFormation is limited);
+  noted as a documented parity gap.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ai-sec-analyst
+  AlertTopicArn:
+    Type: String
+    Description: Phase 7 alert SNS topic (alarm actions)
+  ChatApiId:
+    Type: String
+    Description: HTTP API id of the chat API
+  ConversationTable:
+    Type: String
+    Default: ai-sec-analyst-conversations
+  MonthlyBudgetLimit:
+    Type: Number
+    Default: 50
+  NotificationEmail:
+    Type: String
+    Default: ''
+
+Conditions:
+  HasEmail: !Not [!Equals [!Ref NotificationEmail, '']]
+
+Resources:
+  PlatformDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-platform'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric", "x": 0, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "Lambda Invocations (Sum)", "region": "${AWS::Region}",
+                "view": "timeSeries", "stat": "Sum", "period": 300,
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${ProjectName}-enricher"],
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${ProjectName}-inference"],
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${ProjectName}-orchestrator"],
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${ProjectName}-triage"],
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${ProjectName}-athena-tool"],
+                  ["AWS/Lambda", "Invocations", "FunctionName", "${ProjectName}-config-tool"]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 12, "y": 0, "width": 12, "height": 6,
+              "properties": {
+                "title": "Lambda Errors (Sum)", "region": "${AWS::Region}",
+                "view": "timeSeries", "stat": "Sum", "period": 300,
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "${ProjectName}-orchestrator"],
+                  ["AWS/Lambda", "Errors", "FunctionName", "${ProjectName}-triage"],
+                  ["AWS/Lambda", "Errors", "FunctionName", "${ProjectName}-enricher"],
+                  ["AWS/Lambda", "Errors", "FunctionName", "${ProjectName}-inference"]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 0, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "Chat API requests + errors", "region": "${AWS::Region}",
+                "view": "timeSeries", "stat": "Sum", "period": 300,
+                "metrics": [
+                  ["AWS/ApiGateway", "Count", "ApiId", "${ChatApiId}"],
+                  ["AWS/ApiGateway", "4xx", "ApiId", "${ChatApiId}"],
+                  ["AWS/ApiGateway", "5xx", "ApiId", "${ChatApiId}"]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 12, "y": 6, "width": 12, "height": 6,
+              "properties": {
+                "title": "DynamoDB - conversation history", "region": "${AWS::Region}",
+                "view": "timeSeries", "stat": "Sum", "period": 300,
+                "metrics": [
+                  ["AWS/DynamoDB", "ConsumedReadCapacityUnits", "TableName", "${ConversationTable}"],
+                  ["AWS/DynamoDB", "ConsumedWriteCapacityUnits", "TableName", "${ConversationTable}"]
+                ]
+              }
+            }
+          ]
+        }
+
+  OrchestratorErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-orchestrator-errors'
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - { Name: FunctionName, Value: !Sub '${ProjectName}-orchestrator' }
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+      OKActions: [!Ref AlertTopicArn]
+
+  TriageErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-triage-errors'
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - { Name: FunctionName, Value: !Sub '${ProjectName}-triage' }
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+
+  ChatApi5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-chat-api-5xx'
+      Namespace: AWS/ApiGateway
+      MetricName: 5xx
+      Dimensions:
+        - { Name: ApiId, Value: !Ref ChatApiId }
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlertTopicArn]
+
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub '${ProjectName}-monthly'
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetLimit
+          Unit: USD
+      NotificationsWithSubscribers: !If
+        - HasEmail
+        - - Notification:
+              NotificationType: ACTUAL
+              ComparisonOperator: GREATER_THAN
+              Threshold: 80
+            Subscribers:
+              - { SubscriptionType: EMAIL, Address: !Ref NotificationEmail }
+          - Notification:
+              NotificationType: FORECASTED
+              ComparisonOperator: GREATER_THAN
+              Threshold: 100
+            Subscribers:
+              - { SubscriptionType: EMAIL, Address: !Ref NotificationEmail }
+        - !Ref AWS::NoValue
+
+Outputs:
+  DashboardName:
+    Value: !Ref PlatformDashboard
+  BudgetName:
+    Value: !Sub '${ProjectName}-monthly'
