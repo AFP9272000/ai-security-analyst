@@ -17,5 +17,6 @@ output "budget_name" {
 }
 
 output "anomaly_monitor_arn" {
-  value = aws_ce_anomaly_monitor.service.arn
+  description = "Effective anomaly monitor ARN (created, existing, or null if CE skipped)"
+  value       = local.effective_monitor_arn
 }
