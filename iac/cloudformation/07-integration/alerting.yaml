@@ -1,15 +1,14 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: |
-  Integration & Alerting (Security Tooling).
+  Integration & Alerting (Security Tooling), with alert dedup
+  (ADR-0019).
 
-  PARITY NOTE: Terraform is the deployed source of truth. This template
-  reproduces the SNS topic (AWS-managed key), the two EventBridge rules
-  (GuardDuty high severity + Security Hub HIGH/CRITICAL), the triage
-  Lambda's IAM role, and the EventBridge invoke permissions. The triage
-  Lambda CODE is referenced from a pre-uploaded S3 artifact
-  (CodeBucket/CodeKey), the same parity pattern as earlier layers. The
-  agent id is passed as a parameter (this template does not re-declare
-  the agent).
+  PARITY NOTE: Terraform is the deployed source of truth. Reproduces the
+  SNS topic (AWS-managed key), the dedup DynamoDB table, the two
+  EventBridge rules (GuardDuty high severity + Security Hub HIGH/CRITICAL
+  NEW+ACTIVE), the triage Lambda's IAM role, and the EventBridge invoke
+  permissions. Lambda CODE is referenced from a pre-uploaded S3 artifact.
+  The agent id is passed as a parameter.
 
 Parameters:
   ProjectName:
@@ -17,7 +16,6 @@ Parameters:
     Default: ai-sec-analyst
   BaselineKmsKeyArn:
     Type: String
-    Description: Security-tooling baseline CMK (for the log group + SSM decrypt)
   AgentId:
     Type: String
   AgentAliasId:
@@ -26,11 +24,13 @@ Parameters:
   AlertEmail:
     Type: String
     Default: ''
-    Description: Email to subscribe (blank to skip)
   EnableAgentTriage:
     Type: String
     Default: 'true'
     AllowedValues: ['true', 'false']
+  DedupTtlHours:
+    Type: Number
+    Default: 24
   SlackWebhookParam:
     Type: String
     Default: ''
@@ -59,6 +59,23 @@ Resources:
       Protocol: email
       Endpoint: !Ref AlertEmail
 
+  DedupTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-alert-dedup'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: finding_id, AttributeType: S }
+      KeySchema:
+        - { AttributeName: finding_id, KeyType: HASH }
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref BaselineKmsKeyArn
+
   TriageRole:
     Type: AWS::IAM::Role
     Properties:
@@ -80,6 +97,9 @@ Resources:
               - Effect: Allow
                 Action: sns:Publish
                 Resource: !Ref AlertsTopic
+              - Effect: Allow
+                Action: [dynamodb:PutItem, dynamodb:DeleteItem]
+                Resource: !GetAtt DedupTable.Arn
               - Effect: Allow
                 Action: bedrock:InvokeAgent
                 Resource: !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent-alias/${AgentId}/*'
@@ -116,8 +136,10 @@ Resources:
           AGENT_ID: !Ref AgentId
           AGENT_ALIAS_ID: !Ref AgentAliasId
           ENABLE_AGENT_TRIAGE: !Ref EnableAgentTriage
+          DEDUP_TABLE: !Ref DedupTable
+          DEDUP_TTL_HOURS: !Ref DedupTtlHours
           SLACK_WEBHOOK_PARAM: !Ref SlackWebhookParam
-          MAX_RESUME_RETRIES: '2'
+          MAX_RESUME_RETRIES: '5'
 
   GuardDutyHighRule:
     Type: AWS::Events::Rule
@@ -137,7 +159,7 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Name: !Sub '${ProjectName}-securityhub-high-sev'
-      Description: HIGH/CRITICAL Security Hub findings to the triage Lambda
+      Description: New active HIGH/CRITICAL Security Hub findings to the triage Lambda
       EventPattern:
         source: [aws.securityhub]
         detail-type: [Security Hub Findings - Imported]
@@ -145,6 +167,9 @@ Resources:
           findings:
             Severity:
               Label: [HIGH, CRITICAL]
+            Workflow:
+              Status: [NEW]
+            RecordState: [ACTIVE]
       Targets:
         - Id: triage-lambda
           Arn: !GetAtt TriageFunction.Arn
@@ -170,3 +195,5 @@ Outputs:
     Value: !Ref AlertsTopic
   TriageLambdaName:
     Value: !Ref TriageFunction
+  DedupTableName:
+    Value: !Ref DedupTable

@@ -1,24 +1,35 @@
 """
-Triage Lambda the reflex of the SOC copilot.
+Triage Lambda, the reflex of the SOC copilot.
 
 Trigger: an EventBridge rule fires on a high-severity GuardDuty or
 Security Hub finding. This Lambda:
   1. Parses the finding (both schemas) into a normalized shape.
-  2. Optionally asks the Bedrock agent to triage it (risk + next steps).
-  3. Publishes a formatted alert to SNS (email) and optionally Slack.
+  2. DEDUPLICATES by finding ID (suppresses re-imports of the same
+     finding within a window), see below.
+  3. Optionally asks the Bedrock agent to triage it (risk + next steps).
+  4. Publishes a formatted alert to SNS (email) and optionally Slack.
 
-FAIL-SAFE: the alert is NEVER blocked on the agent. If agent triage is
-disabled, errors, or the Aurora KB is cold, the alert still goes out with
-the raw finding details. A notification you can act on beats a perfect
-summary that never arrives.
+DEDUP: Security Hub and GuardDuty re-import the SAME finding repeatedly
+(re-sends, compliance re-runs, occurrence-count ticks), each firing the
+rule. To avoid one-alert-per-import, we claim the finding ID in a
+DynamoDB table with a conditional write (succeeds only if not seen) and a
+TTL. A claim that succeeds means it's new -> alert; a claim that fails
+means we already alerted on it recently -> skip. If the alert publish
+then fails, we release the claim so an EventBridge retry can re-deliver.
+
+FAIL-SAFE: the alert is never blocked on the agent. If triage is
+disabled, errors, or the KB is cold, the alert still goes out with the
+raw finding details.
 
 Environment variables:
     SNS_TOPIC_ARN        Alert topic (required)
     AGENT_ID             Bedrock agent id (required)
-    AGENT_ALIAS_ID       Alias to invoke (default TSTALIASID = working draft)
+    AGENT_ALIAS_ID       Alias to invoke (default TSTALIASID)
     ENABLE_AGENT_TRIAGE  "true"/"false" (default "true")
-    SLACK_WEBHOOK_PARAM  SSM param name holding a Slack webhook URL (optional)
-    MAX_RESUME_RETRIES   Aurora cold-start retries (default 2)
+    DEDUP_TABLE          DynamoDB dedup table name (dedup disabled if unset)
+    DEDUP_TTL_HOURS      Suppress repeats for this many hours (default 24)
+    SLACK_WEBHOOK_PARAM  SSM param name with a Slack webhook URL (optional)
+    MAX_RESUME_RETRIES   Aurora cold-start retries (default 5)
 """
 from __future__ import annotations
 
@@ -29,6 +40,7 @@ import time
 import urllib.request
 
 import boto3
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -37,10 +49,13 @@ SNS_TOPIC_ARN = os.environ["SNS_TOPIC_ARN"]
 AGENT_ID = os.environ["AGENT_ID"]
 AGENT_ALIAS_ID = os.environ.get("AGENT_ALIAS_ID", "TSTALIASID")
 ENABLE_AGENT_TRIAGE = os.environ.get("ENABLE_AGENT_TRIAGE", "true").lower() == "true"
+DEDUP_TABLE = os.environ.get("DEDUP_TABLE", "")
+DEDUP_TTL_HOURS = int(os.environ.get("DEDUP_TTL_HOURS", "24"))
 SLACK_WEBHOOK_PARAM = os.environ.get("SLACK_WEBHOOK_PARAM", "")
-MAX_RESUME_RETRIES = int(os.environ.get("MAX_RESUME_RETRIES", "2"))
+MAX_RESUME_RETRIES = int(os.environ.get("MAX_RESUME_RETRIES", "5"))
 
 _clients: dict = {}
+_resources: dict = {}
 
 
 def _client(name: str):
@@ -49,10 +64,21 @@ def _client(name: str):
     return _clients[name]
 
 
+def _resource(name: str):
+    if name not in _resources:
+        _resources[name] = boto3.resource(name)
+    return _resources[name]
+
+
 def handler(event, context):
     finding = parse_finding(event)
     logger.info("triage: kind=%s id=%s sev=%s account=%s",
                 finding["kind"], finding["id"], finding["severity"], finding["account"])
+
+    # Dedup: claim the finding id; skip if we've already alerted recently.
+    if not _claim_finding(finding["id"]):
+        logger.info("duplicate finding %s within dedup window; suppressing", finding["id"])
+        return {"status": "suppressed_duplicate", "finding_id": finding["id"]}
 
     triage = None
     if ENABLE_AGENT_TRIAGE:
@@ -67,12 +93,52 @@ def handler(event, context):
         _client("sns").publish(TopicArn=SNS_TOPIC_ARN, Subject=subject, Message=body)
     except Exception:  # noqa: BLE001
         logger.exception("SNS publish failed")
-        raise  # this one matters - re-raise so the failure is visible/retried
+        _release_finding(finding["id"])  # let a retry re-deliver
+        raise
 
     _maybe_post_slack(subject, body)
 
     return {"status": "alerted", "finding_id": finding["id"], "triaged": triage is not None}
 
+
+# --- Deduplication -----------------------------------------------------------
+
+def _claim_finding(finding_id: str) -> bool:
+    """Claim a finding id. Returns True if newly claimed (should alert),
+    False if it was already claimed within the TTL window (suppress).
+    Fails open: if dedup is unconfigured or DynamoDB errors, we alert."""
+    if not DEDUP_TABLE:
+        return True
+    try:
+        _resource("dynamodb").Table(DEDUP_TABLE).put_item(
+            Item={
+                "finding_id": finding_id,
+                "ttl": int(time.time()) + DEDUP_TTL_HOURS * 3600,
+            },
+            ConditionExpression="attribute_not_exists(finding_id)",
+        )
+        return True
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False  # already alerted recently
+        logger.exception("dedup claim error; failing open (will alert)")
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception("dedup claim error; failing open (will alert)")
+        return True
+
+
+def _release_finding(finding_id: str) -> None:
+    """Delete a dedup claim so a retry can re-alert (used on publish failure)."""
+    if not DEDUP_TABLE:
+        return
+    try:
+        _resource("dynamodb").Table(DEDUP_TABLE).delete_item(Key={"finding_id": finding_id})
+    except Exception:  # noqa: BLE001
+        logger.exception("dedup release failed (non-fatal)")
+
+
+# --- Parsing / formatting (pure) ---------------------------------------------
 
 def parse_finding(event: dict) -> dict:
     """Normalize a GuardDuty or Security Hub EventBridge event. Pure."""
@@ -107,7 +173,6 @@ def parse_finding(event: dict) -> dict:
             "resource": (resources[0] or {}).get("Type", "unknown"),
         }
 
-    # Unknown / direct-invoke payload: best-effort passthrough
     return {
         "kind": source or "Unknown",
         "id": detail.get("id", "unknown"),
@@ -145,6 +210,8 @@ def format_alert(finding: dict, triage: str | None) -> tuple[str, str]:
     lines += ["", "-- AI Security Analyst (automated alert)"]
     return subject, "\n".join(lines)
 
+
+# --- Agent triage ------------------------------------------------------------
 
 def triage_with_agent(finding: dict) -> str:
     """Ask the agent to assess the finding. Retries Aurora cold starts."""

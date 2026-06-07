@@ -1,15 +1,14 @@
-# Alerting: SNS topic + EventBridge rules (in Security Tooling)
+# Alerting: SNS topic + EventBridge rules + dedup table (Security Tooling)
 #
 # SNS encryption uses the AWS-managed key alias/aws/sns, NOT the baseline
-# CMK. Deliberate: a CMK on an SNS topic needs sns.amazonaws.com granted
-# in the key policy (the recurring KMS-service-principal lesson - hit on
-# CW Logs, EventBridge, SQS, the guardrail). For an internal alert topic
-# that isn't worth the key-policy maintenance, so we use the managed key.
-# Still encrypted at rest; no key-policy coupling. See ADR-0017.
+# CMK (recurring KMS-service-principal lesson).
 #
-# Two EventBridge rules on the default bus (where GuardDuty and Security
-# Hub natively emit in this delegated-admin account), each filtered to
-# high severity and targeting the triage Lambda.
+# DEDUP (ADR-0019): Security Hub and GuardDuty re-import the same finding
+# repeatedly; each re-import fires the rule. Two countermeasures:
+#   - The triage Lambda dedups by finding id via a conditional write to
+#     the dynamodb table below (one alert per finding per TTL window).
+#   - The Security Hub rule is narrowed to Workflow.Status=NEW +
+#     RecordState=ACTIVE so stale/resolved churn doesn't even arrive.
 
 resource "aws_sns_topic" "alerts" {
   provider = aws.security_tooling
@@ -19,8 +18,6 @@ resource "aws_sns_topic" "alerts" {
   kms_master_key_id = "alias/aws/sns"
 }
 
-# Email subscription, only when an address is provided. Requires manual
-# confirmation via the link AWS emails.
 resource "aws_sns_topic_subscription" "email" {
   count    = var.alert_email == "" ? 0 : 1
   provider = aws.security_tooling
@@ -30,7 +27,35 @@ resource "aws_sns_topic_subscription" "email" {
   endpoint  = var.alert_email
 }
 
+# Alert deduplication table
+# One row per alerted finding id, auto-expiring via TTL. The triage Lambda
+# conditional-writes here: a successful write means "new, alert"; a
+# conditional failure means "already alerted, suppress".
+resource "aws_dynamodb_table" "alert_dedup" {
+  provider = aws.security_tooling
+
+  name         = "${var.project}-alert-dedup"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "finding_id"
+
+  attribute {
+    name = "finding_id"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = local.security_tooling_kms_arn
+  }
+}
+
 # EventBridge: GuardDuty high severity (>= 7)
+# Re-fires of the same finding are handled by the Lambda's id dedup.
 resource "aws_cloudwatch_event_rule" "guardduty_high" {
   provider = aws.security_tooling
 
@@ -54,12 +79,15 @@ resource "aws_cloudwatch_event_target" "guardduty_high" {
   arn       = aws_lambda_function.triage.arn
 }
 
-# EventBridge: Security Hub HIGH/CRITICAL
+# EventBridge: Security Hub HIGH/CRITICAL, NEW + ACTIVE only
+# Narrowed to genuinely-new active findings. This cuts the bulk of the
+# re-import noise before it reaches the Lambda; the Lambda's id dedup
+# handles any remaining repeats.
 resource "aws_cloudwatch_event_rule" "securityhub_high" {
   provider = aws.security_tooling
 
   name        = "${var.project}-securityhub-high-sev"
-  description = "HIGH/CRITICAL Security Hub findings to the triage Lambda"
+  description = "New, active HIGH/CRITICAL Security Hub findings to the triage Lambda"
 
   event_pattern = jsonencode({
     source      = ["aws.securityhub"]
@@ -69,6 +97,10 @@ resource "aws_cloudwatch_event_rule" "securityhub_high" {
         Severity = {
           Label = ["HIGH", "CRITICAL"]
         }
+        Workflow = {
+          Status = ["NEW"]
+        }
+        RecordState = ["ACTIVE"]
       }
     }
   })
@@ -82,7 +114,7 @@ resource "aws_cloudwatch_event_target" "securityhub_high" {
   arn       = aws_lambda_function.triage.arn
 }
 
-# Let EventBridge invoke the triage Lambda
+#  Let EventBridge invoke the triage Lambda
 resource "aws_lambda_permission" "events_guardduty" {
   provider = aws.security_tooling
 

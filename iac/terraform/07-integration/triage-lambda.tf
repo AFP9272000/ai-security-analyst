@@ -1,9 +1,8 @@
 # Triage Lambda (in Security Tooling)
 #
 # Invoked by the EventBridge rules in alerting.tf. Parses the finding,
-# optionally triages it with the agent, publishes the alert to SNS (and
-# optionally Slack). Not in a VPC: it calls Bedrock, SNS, SSM, and
-# (optionally) Slack over the internet.
+# dedups by finding id, optionally triages it with the agent, publishes
+# the alert to SNS (and optionally Slack). Not in a VPC.
 
 data "archive_file" "triage" {
   type        = "zip"
@@ -52,6 +51,17 @@ data "aws_iam_policy_document" "triage" {
     resources = [aws_sns_topic.alerts.arn]
   }
 
+  # Dedup table: claim (PutItem) and release-on-failure (DeleteItem).
+  statement {
+    sid    = "DedupTable"
+    effect = "Allow"
+    actions = [
+      "dynamodb:PutItem",
+      "dynamodb:DeleteItem",
+    ]
+    resources = [aws_dynamodb_table.alert_dedup.arn]
+  }
+
   # Invoke the agent for triage. Authorized against the agent-alias ARN;
   # allow any alias of this agent (covers TSTALIASID and a published one).
   statement {
@@ -65,8 +75,7 @@ data "aws_iam_policy_document" "triage" {
     ]
   }
 
-  # Read the optional Slack webhook (SecureString) from SSM, scoped to
-  # the project parameter path.
+  # Read the optional Slack webhook (SecureString) from SSM.
   statement {
     sid    = "ReadSlackWebhook"
     effect = "Allow"
@@ -78,9 +87,9 @@ data "aws_iam_policy_document" "triage" {
     ]
   }
 
-  # KMS: decrypt the log-group CMK and the SecureString SSM parameter
-  # (both the baseline key). SNS uses the AWS-managed key, so no grant
-  # needed for publishing.
+  # KMS: decrypt the log-group CMK, the SecureString SSM parameter, and
+  # the CMK-encrypted dedup table (all the baseline key). SNS uses the
+  # AWS-managed key, so no grant needed for publishing.
   statement {
     sid    = "KMSDecrypt"
     effect = "Allow"
@@ -111,7 +120,7 @@ resource "aws_lambda_function" "triage" {
   provider = aws.security_tooling
 
   function_name    = "${var.project}-triage"
-  description      = "Auto-triages high-severity findings with the agent, alerts via SNS/Slack"
+  description      = "Auto-triages high-severity findings with the agent, alerts via SNS/Slack (deduped)"
   role             = aws_iam_role.triage.arn
   runtime          = "python3.12"
   handler          = "lambda_function.handler"
@@ -126,8 +135,10 @@ resource "aws_lambda_function" "triage" {
       AGENT_ID            = local.agent_id
       AGENT_ALIAS_ID      = var.agent_alias_id
       ENABLE_AGENT_TRIAGE = tostring(var.enable_agent_triage)
+      DEDUP_TABLE         = aws_dynamodb_table.alert_dedup.name
+      DEDUP_TTL_HOURS     = tostring(var.dedup_ttl_hours)
       SLACK_WEBHOOK_PARAM = var.slack_webhook_ssm_param
-      MAX_RESUME_RETRIES  = "2"
+      MAX_RESUME_RETRIES  = "5"
       LOG_LEVEL           = "INFO"
     }
   }
