@@ -16,6 +16,7 @@ on:
           - 05-ml
           - 06-genai
           - 07-integration
+          - 08-observability
       action:
         description: 'plan / apply / destroy'
         required: true
