@@ -1,21 +1,20 @@
 """
-Triage Lambda, the reflex of the SOC copilot.
+Triage Lambda the reflex of the SOC copilot.
 
 Trigger: an EventBridge rule fires on a high-severity GuardDuty or
 Security Hub finding. This Lambda:
   1. Parses the finding (both schemas) into a normalized shape.
   2. DEDUPLICATES by finding ID (suppresses re-imports of the same
-     finding within a window), see below.
+     finding within a window).
   3. Optionally asks the Bedrock agent to triage it (risk + next steps).
   4. Publishes a formatted alert to SNS (email) and optionally Slack.
 
-DEDUP: Security Hub and GuardDuty re-import the SAME finding repeatedly
-(re-sends, compliance re-runs, occurrence-count ticks), each firing the
-rule. To avoid one-alert-per-import, we claim the finding ID in a
-DynamoDB table with a conditional write (succeeds only if not seen) and a
-TTL. A claim that succeeds means it's new -> alert; a claim that fails
-means we already alerted on it recently -> skip. If the alert publish
-then fails, we release the claim so an EventBridge retry can re-deliver.
+DEDUP: Security Hub and GuardDuty re-import the SAME finding repeatedly,
+each firing the rule. claim the finding ID in a DynamoDB table with a
+conditional write (succeeds only if not seen) and a TTL. A claim that
+succeeds means it's new -> alert; a claim that fails means we already
+alerted recently -> skip. If the alert publish then fails, we release the
+claim so an EventBridge retry can re-deliver.
 
 FAIL-SAFE: the alert is never blocked on the agent. If triage is
 disabled, errors, or the KB is cold, the alert still goes out with the
@@ -36,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import urllib.request
 
@@ -53,6 +53,9 @@ DEDUP_TABLE = os.environ.get("DEDUP_TABLE", "")
 DEDUP_TTL_HOURS = int(os.environ.get("DEDUP_TTL_HOURS", "24"))
 SLACK_WEBHOOK_PARAM = os.environ.get("SLACK_WEBHOOK_PARAM", "")
 MAX_RESUME_RETRIES = int(os.environ.get("MAX_RESUME_RETRIES", "5"))
+
+# Bedrock sessionId allows only these characters.
+_SESSION_ID_DISALLOWED = re.compile(r"[^0-9a-zA-Z._:-]")
 
 _clients: dict = {}
 _resources: dict = {}
@@ -75,7 +78,6 @@ def handler(event, context):
     logger.info("triage: kind=%s id=%s sev=%s account=%s",
                 finding["kind"], finding["id"], finding["severity"], finding["account"])
 
-    # Dedup: claim the finding id; skip if we've already alerted recently.
     if not _claim_finding(finding["id"]):
         logger.info("duplicate finding %s within dedup window; suppressing", finding["id"])
         return {"status": "suppressed_duplicate", "finding_id": finding["id"]}
@@ -104,9 +106,8 @@ def handler(event, context):
 # --- Deduplication -----------------------------------------------------------
 
 def _claim_finding(finding_id: str) -> bool:
-    """Claim a finding id. Returns True if newly claimed (should alert),
-    False if it was already claimed within the TTL window (suppress).
-    Fails open: if dedup is unconfigured or DynamoDB errors, we alert."""
+    """Claim a finding id. True if newly claimed (alert), False if already
+    claimed within the TTL window (suppress). Fails open: alert on error."""
     if not DEDUP_TABLE:
         return True
     try:
@@ -120,7 +121,7 @@ def _claim_finding(finding_id: str) -> bool:
         return True
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return False  # already alerted recently
+            return False
         logger.exception("dedup claim error; failing open (will alert)")
         return True
     except Exception:  # noqa: BLE001
@@ -129,7 +130,6 @@ def _claim_finding(finding_id: str) -> bool:
 
 
 def _release_finding(finding_id: str) -> None:
-    """Delete a dedup claim so a retry can re-alert (used on publish failure)."""
     if not DEDUP_TABLE:
         return
     try:
@@ -211,6 +211,13 @@ def format_alert(finding: dict, triage: str | None) -> tuple[str, str]:
     return subject, "\n".join(lines)
 
 
+def _safe_session_id(finding_id: str) -> str:
+    """Bedrock sessionId must match [0-9a-zA-Z._:-]+. Finding ids (e.g.
+    Security Hub ARNs) contain '/', so sanitize before using as a session."""
+    safe = _SESSION_ID_DISALLOWED.sub("-", finding_id)
+    return f"triage-{safe}"[:100]
+
+
 # --- Agent triage ------------------------------------------------------------
 
 def triage_with_agent(finding: dict) -> str:
@@ -230,7 +237,7 @@ def triage_with_agent(finding: dict) -> str:
     )
 
     runtime = _client("bedrock-agent-runtime")
-    session_id = f"triage-{finding['id']}"[:100]
+    session_id = _safe_session_id(finding["id"])
     last_exc = None
 
     for attempt in range(1, MAX_RESUME_RETRIES + 1):
