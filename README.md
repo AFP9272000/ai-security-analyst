@@ -276,4 +276,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
-**Addison Pirlo** | [LinkedIn](https://www.linkedin.com/in/addison-pirlo-98b1a8297/) | [Email](mailto:addisonpirlo2@gmail.com)
+**Addison Pirlo** | [LinkedIn](www.linkedin.com/in/addison-p-6406b225b) | [Email](mailto:addisonpirlo2@gmail.com)
