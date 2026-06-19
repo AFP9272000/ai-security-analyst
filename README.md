@@ -26,7 +26,8 @@ A production-grade security operations platform deployed across a four-account A
 
 ## Architecture
 
-<img alt="AI Security Analyst architecture" src="docs/architecture.png" width="1100" />
+<img width="1360" height="1010" alt="architectureai" src="https://github.com/user-attachments/assets/dcf305ab-90d1-4076-a1a0-16a5287708ab" />
+
 
 ## Security Controls
 
