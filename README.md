@@ -20,7 +20,7 @@ A production-grade security operations platform deployed across a four-account A
 - Suppresses alert fatigue with **finding-level deduplication** across both detection sources
 - Scores findings with a custom **SageMaker IsolationForest** pipeline gated by a model-registry approval
 - Cuts vector-store idle cost by roughly **95%** versus OpenSearch Serverless via Aurora pgvector scale-to-zero
-- Idles near **$20/month** through scale-to-zero and build-then-destroy patterns
+- Idles near **$40-50/month** through scale-to-zero and build-then-destroy patterns
 - Dual IaC: identical platform deployable via **Terraform or CloudFormation**
 - Documented with **23 ADRs** and a full **Well-Architected review**
 
