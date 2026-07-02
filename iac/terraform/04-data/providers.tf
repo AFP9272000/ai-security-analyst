@@ -51,8 +51,8 @@ locals {
   deploy_role_arns       = data.terraform_remote_state.foundation.outputs.deploy_role_arns
   baseline_key_arns      = data.terraform_remote_state.foundation.outputs.baseline_key_arns
 
-  log_archive_bucket_name = data.terraform_remote_state.telemetry.outputs.log_archive_bucket_name
-  log_archive_bucket_arn  = data.terraform_remote_state.telemetry.outputs.log_archive_bucket_arn
+  log_archive_bucket_name = try(data.terraform_remote_state.telemetry.outputs.log_archive_bucket_name, "")
+  log_archive_bucket_arn  = try(data.terraform_remote_state.telemetry.outputs.log_archive_bucket_arn, "")
 }
 
 provider "aws" {

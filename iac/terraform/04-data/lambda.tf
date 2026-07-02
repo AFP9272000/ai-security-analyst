@@ -143,7 +143,7 @@ resource "aws_cloudwatch_event_rule" "enricher_subscription" {
   name        = "${var.project}-enricher-subscription"
   description = "Triggers the enricher Lambda for all events on the security-findings bus"
 
-  event_bus_name = data.terraform_remote_state.telemetry.outputs.security_findings_bus_name
+  event_bus_name = try(data.terraform_remote_state.telemetry.outputs.security_findings_bus_name, "")
 
   # Match all events on the custom bus.
   event_pattern = jsonencode({
