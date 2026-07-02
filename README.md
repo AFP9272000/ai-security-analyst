@@ -20,13 +20,14 @@ A production-grade security operations platform deployed across a four-account A
 - Suppresses alert fatigue with **finding-level deduplication** across both detection sources
 - Scores findings with a custom **SageMaker IsolationForest** pipeline gated by a model-registry approval
 - Cuts vector-store idle cost by roughly **95%** versus OpenSearch Serverless via Aurora pgvector scale-to-zero
-- Idles near **$20/month** through scale-to-zero and build-then-destroy patterns
+- Idles near **$40-50/month** through scale-to-zero and build-then-destroy patterns
 - Dual IaC: identical platform deployable via **Terraform or CloudFormation**
 - Documented with **23 ADRs** and a full **Well-Architected review**
 
 ## Architecture
 
-<img alt="AI Security Analyst architecture" src="docs/architecture.png" width="1100" />
+<img width="1360" height="1010" alt="architectureai" src="https://github.com/user-attachments/assets/dcf305ab-90d1-4076-a1a0-16a5287708ab" />
+
 
 ## Security Controls
 
@@ -276,4 +277,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
-**Addison Pirlo** | [LinkedIn](https://www.linkedin.com/in/addison-pirlo-98b1a8297/) | [Email](mailto:addisonpirlo2@gmail.com)
+**Addison Pirlo** | [LinkedIn](www.linkedin.com/in/addison-p-6406b225b) | [Email](mailto:addisonpirlo2@gmail.com)
