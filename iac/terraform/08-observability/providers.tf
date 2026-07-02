@@ -57,9 +57,9 @@ locals {
 
   deploy_role_arns = data.terraform_remote_state.foundation.outputs.deploy_role_arns
 
-  alert_topic_arn       = data.terraform_remote_state.integration.outputs.alert_topic_arn
-  conversation_table    = data.terraform_remote_state.genai.outputs.conversation_table_name
-  chat_api_endpoint     = data.terraform_remote_state.genai.outputs.chat_api_endpoint
+  alert_topic_arn    = try(data.terraform_remote_state.integration.outputs.alert_topic_arn, "")
+  conversation_table = try(data.terraform_remote_state.genai.outputs.conversation_table_name, "")
+  chat_api_endpoint  = try(data.terraform_remote_state.genai.outputs.chat_api_endpoint, "")
   # Parse the HTTP API id out of the endpoint URL
   # (https://<apiId>.execute-api.<region>.amazonaws.com)
   chat_api_id           = split(".", replace(local.chat_api_endpoint, "https://", ""))[0]
