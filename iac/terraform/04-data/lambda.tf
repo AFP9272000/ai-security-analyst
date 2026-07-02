@@ -155,7 +155,7 @@ resource "aws_cloudwatch_event_target" "enricher_target" {
   provider = aws.security_tooling
 
   rule           = aws_cloudwatch_event_rule.enricher_subscription.name
-  event_bus_name = data.terraform_remote_state.telemetry.outputs.security_findings_bus_name
+  event_bus_name = try(data.terraform_remote_state.telemetry.outputs.security_findings_bus_name, "ai-sec-analyst-security-findings")
   arn            = aws_lambda_function.enricher.arn
   target_id      = "enricher"
 
