@@ -7,7 +7,6 @@ Multi-account AWS security platform with a generative-AI SOC copilot: centralize
 ![CI/CD](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions%20%2B%20CodePipeline-green)
 ![GenAI](https://img.shields.io/badge/GenAI-Bedrock%20Agent%20%7C%20pgvector%20KB%20%7C%20Guardrails-blueviolet)
 ![Auth](https://img.shields.io/badge/Auth-OIDC%20%7C%20Zero%20Secrets-brightgreen)
-![Maps to](https://img.shields.io/badge/Maps%20to-SAP--C02%20%7C%20DOP--C02%20%7C%20MLA--C01%20%7C%20AIF--C01-orange)
 
 ## Overview
 
