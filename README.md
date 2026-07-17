@@ -161,69 +161,6 @@ cloudformation/
 | ML pipeline, training, model registry, deployment | **MLA-C01** | SageMaker pipeline and inference layer |
 | Generative AI, Bedrock, retrieval-augmented generation, prompt safety | **AIF-C01** | knowledge base, agent, guardrail |
 
-## Quick Start
-
-### Prerequisites
-- AWS Organization with four accounts (management, log-archive, security-tooling, workload)
-- A GitHub OIDC role in the management account
-- Bedrock model access for an entitled Claude model (this build uses Claude Sonnet 4.5)
-- Terraform >= 1.7.0
-- AWS CLI installed
-
-### Deploy with Terraform (via GitHub Actions)
-
-```bash
-# Clone repository
-git clone https://github.com/AFP9272000/ai-security-analyst.git
-cd ai-security-analyst
-
-# Bootstrap the remote state backend (one-time)
-#   Actions -> terraform-deploy -> layer: 00-bootstrap, action: apply
-
-# Deploy the remaining layers in order, each via the workflow:
-#   Actions -> terraform-deploy -> layer: 01-foundation ... 08-observability, action: plan, then apply
-```
-
-Local plans require initializing the remote backend first (the workflow handles this). Fetch resource IDs with the AWS CLI rather than `terraform output`.
-
-### Deploy with CloudFormation
-
-```bash
-# Per layer, against the appropriate account and region
-aws cloudformation deploy \
-  --template-file iac/cloudformation/07-integration/alerting.yaml \
-  --stack-name ai-sec-analyst-integration \
-  --parameter-overrides AlertEmail=you@example.com AgentId=<id> ChatApiId=<id> \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --region us-east-1
-```
-
-## Cost Management
-
-| Resource | Cost | Optimization |
-|----------|------|--------------|
-| KMS customer-managed keys | ~$1 / key / month | Shared baseline keys per account |
-| Aurora Serverless v2 (knowledge base) | ~$0 paused | Scale-to-zero, auto-pause after 1h idle |
-| VPC interface endpoints (network layer) | ~$0.01 / hr each | Build then destroy; up only when needed |
-| SageMaker inference endpoint | ~$50 / month if running | Off by default; agent uses seed scores |
-| DynamoDB, S3, Secrets Manager | pennies / month | On-demand billing |
-| Bedrock (Claude Sonnet 4.5) | cents per conversation | Pay per token |
-
-**Idle footprint: roughly $20/month**, dominated by KMS keys.
-
-```bash
-# Tear down the ephemeral network layer when not in use
-#   Actions -> terraform-deploy -> layer: 02-network, action: destroy
-
-# Confirm the SageMaker inference endpoint is off (should list no in-service endpoints)
-aws sagemaker list-endpoints --region us-east-1 \
-  --query "Endpoints[?contains(EndpointName,'ai-sec-analyst')].[EndpointName,EndpointStatus]" --output table
-
-# Aurora auto-pauses; confirm the capacity floor
-aws rds describe-db-clusters --region us-east-1 \
-  --query "DBClusters[?contains(DBClusterIdentifier,'ai-sec-analyst')].ServerlessV2ScalingConfiguration"
-```
-
 ## Project Structure
 
 ```
